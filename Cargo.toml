@@ -4,12 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+axum = { version = "0.5.17", default-features = false, features = ["json", "http1", "http2", "tower-log"] }
 chrono = { version = "0.4.23", default-features = false, features = ["clock"] }
 futures = "0.3.25"
 reqwest = { version = "0.11.12", features = ["json"] }
 serde = { version = "1.0.147", features = ["derive"] }
 serde_json = "1.0.87"
+signal-hook = "0.3.14"
+signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
 thiserror = "1.0.37"
-tokio = { version = "1.21.2", features = ["macros", "fs", "sync", "io-util", "time"] }
+tokio = { version = "1.21.2", features = ["macros", "fs", "sync", "io-util", "time", "rt-multi-thread"] }
+tower-http = { version = "0.3.4", default-features = false, features = ["compression-deflate", "trace", "request-id"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
+
+[dev-dependencies]
+tempdir = "0.3.7"

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use futures::stream::{self, Stream, StreamExt, TryStreamExt};
 use thiserror::Error as ThisError;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, SeekFrom};
 use tracing::debug;
 
 use crate::gbfs::models;
@@ -16,7 +16,8 @@ use crate::storage::binary::Binary;
 use super::binary;
 
 /// Number of cached elements at the end of the journal
-const JOURNAL_CACHE_SIZE: usize = 64;
+const JOURNAL_CACHE_SIZE: usize = 4096; // This will fit in 200 MB for 1500 journals of 27 bits
+                                        // entries
 
 /// Size of file cache while performing sequencial reads
 const SEQ_READ_CACHE_SIZE: usize = 128 * 1024; // 128 kB
@@ -64,10 +65,7 @@ impl JournalObject for models::StationStatus {
     }
 }
 
-pub struct Journal<const BIN_SIZE: usize, T>
-where
-    T: Debug + Eq + Binary<BIN_SIZE> + JournalObject,
-{
+pub struct Journal<const BIN_SIZE: usize, T> {
     size: usize,
     path: PathBuf,
     cache: VecDeque<T>,
@@ -76,7 +74,7 @@ where
 
 impl<const BIN_SIZE: usize, T> Journal<BIN_SIZE, T>
 where
-    T: Debug + Clone + Eq + Binary<BIN_SIZE> + JournalObject,
+    T: Clone + Debug + Eq + Binary<BIN_SIZE> + JournalObject,
 {
     pub async fn open(path: PathBuf) -> Result<Self, Error<T::Key>> {
         let mut size = 0;
@@ -145,15 +143,18 @@ where
         Ok(true)
     }
 
-    pub async fn iter(
+    pub async fn iter_from(
         &self,
+        index: usize,
     ) -> Result<impl Stream<Item = Result<Cow<T>, Error<T::Key>>>, Error<T::Key>> {
         let file_stream = {
             stream::iter({
-                if self.len() <= JOURNAL_CACHE_SIZE {
+                if self.len().saturating_sub(index) <= JOURNAL_CACHE_SIZE {
                     None
                 } else {
-                    let file = File::open(&self.path).await?;
+                    let file_index = (index * BIN_SIZE).try_into().expect("invalid file index");
+                    let mut file = File::open(&self.path).await?;
+                    file.seek(SeekFrom::Start(file_index)).await?;
                     Some(stream_from_current_pos(file).await)
                 }
             })
@@ -161,13 +162,22 @@ where
             .map(|res| res.map(Cow::Owned))
         };
 
-        let cache_stream = stream::iter(&self.cache).map(Cow::Borrowed).map(Ok);
+        let cache_stream = stream::iter(&self.cache)
+            .skip((JOURNAL_CACHE_SIZE + index).saturating_sub(self.len()))
+            .map(Cow::Borrowed)
+            .map(Ok);
 
         let stream = file_stream
             .take(self.len() - self.cache.len())
             .chain(cache_stream);
 
         Ok(stream)
+    }
+
+    pub async fn iter(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Cow<T>, Error<T::Key>>>, Error<T::Key>> {
+        self.iter_from(0).await
     }
 }
 
@@ -200,4 +210,64 @@ fn push_cache<T>(cache: &mut VecDeque<T>, obj: T) -> Option<T> {
 
     cache.push_back(obj);
     poped
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::tests::test_journal::{TestObj, TestObjJournal};
+
+    #[tokio::test]
+    async fn read_journal() {
+        let mut journal = TestObjJournal::new().await;
+
+        let objects: Vec<_> = (0..1024)
+            .map(|x| TestObj {
+                timestamp: x,
+                content: (x * x) as _,
+            })
+            .collect();
+
+        for obj in &objects {
+            journal.insert(obj.clone()).await.unwrap();
+        }
+
+        let from_journal: Vec<_> = journal
+            .iter()
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().into_owned())
+            .collect()
+            .await;
+
+        assert_eq!(objects, from_journal);
+    }
+
+    #[tokio::test]
+    async fn read_journal_with_duplicates() {
+        let mut journal = TestObjJournal::new().await;
+
+        let objects: Vec<_> = (0..1024)
+            .map(|x| TestObj {
+                timestamp: x,
+                content: (x * x) as _,
+            })
+            .collect();
+
+        for obj in &objects {
+            journal.insert(obj.clone()).await.unwrap();
+            journal.insert(obj.clone()).await.unwrap();
+            journal.insert(obj.clone()).await.unwrap();
+        }
+
+        let from_journal: Vec<_> = journal
+            .iter()
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().into_owned())
+            .collect()
+            .await;
+
+        assert_eq!(objects, from_journal);
+    }
 }
