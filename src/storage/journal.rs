@@ -159,7 +159,7 @@ where
     }
 }
 
-async fn stream_from_current_pos<const BIN_SIZE: usize, T: Binary<BIN_SIZE> + JournalObject>(
+pub async fn stream_from_current_pos<const BIN_SIZE: usize, T: Binary<BIN_SIZE> + JournalObject>(
     reader: impl AsyncRead + Unpin,
 ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>>, Error<T::Key>> {
     let cached_reader = BufReader::with_capacity(SEQ_READ_CACHE_SIZE, reader);
