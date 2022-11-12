@@ -1,8 +1,10 @@
+use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
-use futures::stream::{Stream, TryStreamExt};
+use futures::stream::{self, Stream, StreamExt, TryStreamExt};
 use thiserror::Error as ThisError;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -14,7 +16,7 @@ use crate::storage::binary::Binary;
 use super::binary;
 
 /// Number of cached elements at the end of the journal
-const JOURNAL_CACHE_SIZE: usize = 128;
+const JOURNAL_CACHE_SIZE: usize = 64;
 
 /// Size of file cache while performing sequencial reads
 const SEQ_READ_CACHE_SIZE: usize = 128 * 1024; // 128 kB
@@ -64,7 +66,7 @@ impl JournalObject for models::StationStatus {
 
 pub struct Journal<const BIN_SIZE: usize, T>
 where
-    T: std::fmt::Debug + Eq + Binary<BIN_SIZE> + JournalObject,
+    T: Debug + Eq + Binary<BIN_SIZE> + JournalObject,
 {
     size: usize,
     path: PathBuf,
@@ -74,7 +76,7 @@ where
 
 impl<const BIN_SIZE: usize, T> Journal<BIN_SIZE, T>
 where
-    T: std::fmt::Debug + Eq + Binary<BIN_SIZE> + JournalObject,
+    T: Debug + Clone + Eq + Binary<BIN_SIZE> + JournalObject,
 {
     pub async fn open(path: PathBuf) -> Result<Self, Error<T::Key>> {
         let mut size = 0;
@@ -145,17 +147,27 @@ where
 
     pub async fn iter(
         &self,
-    ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>>, Error<T::Key>> {
+    ) -> Result<impl Stream<Item = Result<Cow<T>, Error<T::Key>>>, Error<T::Key>> {
         let file_stream = {
-            if self.is_empty() {
-                None
-            } else {
-                let file = File::open(&self.path).await?;
-                Some(stream_from_current_pos(file).await)
-            }
+            stream::iter({
+                if self.len() <= JOURNAL_CACHE_SIZE {
+                    None
+                } else {
+                    let file = File::open(&self.path).await?;
+                    Some(stream_from_current_pos(file).await)
+                }
+            })
+            .try_flatten()
+            .map(|res| res.map(Cow::Owned))
         };
 
-        Ok(futures::stream::iter(file_stream).try_flatten())
+        let cache_stream = stream::iter(&self.cache).map(Cow::Borrowed).map(Ok);
+
+        let stream = file_stream
+            .take(self.len() - self.cache.len())
+            .chain(cache_stream);
+
+        Ok(stream)
     }
 }
 
@@ -164,7 +176,7 @@ pub async fn stream_from_current_pos<const BIN_SIZE: usize, T: Binary<BIN_SIZE> 
 ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>>, Error<T::Key>> {
     let cached_reader = BufReader::with_capacity(SEQ_READ_CACHE_SIZE, reader);
 
-    let stream = futures::stream::try_unfold(cached_reader, |mut cached_reader| async move {
+    let stream = stream::try_unfold(cached_reader, |mut cached_reader| async move {
         let mut buffer = [0; BIN_SIZE];
 
         match cached_reader.read_exact(&mut buffer).await {
