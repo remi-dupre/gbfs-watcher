@@ -1,3 +1,4 @@
+use chrono::offset::Utc;
 use thiserror::Error as ThisError;
 
 use super::models;
@@ -85,8 +86,8 @@ impl GbfsApi {
         Ok(resp.data)
     }
 
-    pub async fn get_station_status(&self) -> Result<models::SystemInformation, Error> {
-        let resp: models::SystemInformationResponse = self
+    pub async fn get_station_status(&self) -> Result<Vec<models::StationStatus>, Error> {
+        let mut resp: models::StationStatusResponse = self
             .client
             .get(&self.station_status_url)
             .send()
@@ -94,6 +95,16 @@ impl GbfsApi {
             .json()
             .await?;
 
-        Ok(resp.data)
+        let now = Utc::now()
+            .timestamp()
+            .try_into()
+            .expect("invalid timestamp");
+
+        // Velib' API doesn't appear to return monotonic timestamps so we override them
+        for status in &mut resp.data.stations {
+            status.last_reported = now;
+        }
+
+        Ok(resp.data.stations)
     }
 }

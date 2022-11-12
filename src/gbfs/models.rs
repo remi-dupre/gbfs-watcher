@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub type StationId = u64;
 pub type Coord = f32;
@@ -12,7 +12,7 @@ pub type VehicleCount = u16;
 
 /// Every JSON file presented in this specification contains the same common header information at
 /// the top level of the JSON response object.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Response<D> {
     /// Indicates the last time data in the feed was updated. This timestamp represents the
     /// publisher's knowledge of the current state of the system at this point in time.
@@ -37,14 +37,14 @@ pub type GbfsResponse = Response<FeedPerLang>;
 /// value in the system_information.json file.
 pub type FeedPerLang = HashMap<String, FeedData>;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct FeedData {
     /// An array of all of the feeds that are published by this auto-discovery file. Each element
     /// in the array is an object with the keys below.
     pub feeds: Vec<Feed>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Feed {
     /// Key identifying the type of feed this is. The key MUST be the base file name defined in the
     /// spec for the corresponding feed type (system_information for system_information.json file,
@@ -61,7 +61,7 @@ pub struct Feed {
 /// ------------------
 pub type SystemInformationResponse = Response<SystemInformation>;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct SystemInformation {
     /// This is a globally unique identifier for the vehicle share system. It is up to the
     /// publisher of the feed to guarantee uniqueness and MUST be checked against existing
@@ -93,13 +93,13 @@ pub struct SystemInformation {
 /// station_information.json MUST have a corresponding entry in station_status.json.
 pub type StationInformationResponse = Response<StationInformationData>;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StationInformationData {
     /// Array that contains one object per station as defined below.
     pub stations: Vec<StationInformation>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StationInformation {
     /// Identifier of a station.
     pub station_id: StationId,
@@ -147,13 +147,13 @@ pub struct StationInformation {
 /// station_information.json.
 pub type StationStatusResponse = Response<StationStatusData>;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StationStatusData {
     /// Array that contains one object per station as defined below.
     pub stations: Vec<StationStatus>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct StationStatus {
     /// Identifier of a station.
     pub station_id: StationId,
@@ -166,29 +166,85 @@ pub struct StationStatus {
 
     /// Number of empty but disabled dock points at the station. This value remains as part of the
     /// spec as it is possibly useful during development.
-    pub num_docks_disabled: Option<VehicleCount>,
+    #[serde(default)]
+    pub num_docks_disabled: VehicleCount,
 
     /// 1/0 boolean - is the station currently on the street.
+    #[serde(deserialize_with = "deserialize_bool_int")]
     pub is_installed: bool,
 
     /// 1/0 boolean - is the station currently renting bikes (even if the station is empty, if it
     /// is set to allow rentals this value should be 1).
+    #[serde(deserialize_with = "deserialize_bool_int")]
     pub is_returning: bool,
 
     /// 1/0 boolean - is the station accepting bike returns (if a station is full but would allow a
     /// return if it was not full then this value should be 1).
+    #[serde(deserialize_with = "deserialize_bool_int")]
     pub is_renting: bool,
 
     /// Integer POSIX timestamp indicating the last time this station reported its status to the
     /// backend.
-    pub last_report: Timestamp,
+    pub last_reported: Timestamp,
 
     /// This field is not part of the standart v1.1 schema
+    #[serde(deserialize_with = "deserialize_bikes_available_per_type")]
     pub num_bikes_available_types: BikesAvailablePerType,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct BikesAvailablePerType {
     pub mechanical: VehicleCount,
     pub ebike: VehicleCount,
+}
+
+fn deserialize_bikes_available_per_type<'de, D>(
+    deserializer: D,
+) -> Result<BikesAvailablePerType, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    struct PerTypeVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for PerTypeVisitor {
+        type Value = BikesAvailablePerType;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a sequence of maps")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut mechanical = 0;
+            let mut ebike = 0;
+
+            #[derive(Deserialize)]
+            #[serde(rename_all = "lowercase")]
+            enum TypedCount {
+                Mechanical(VehicleCount),
+                Ebike(VehicleCount),
+            }
+
+            while let Some(x) = seq.next_element::<TypedCount>()? {
+                match x {
+                    TypedCount::Mechanical(x) => mechanical = x,
+                    TypedCount::Ebike(x) => ebike = x,
+                }
+            }
+
+            Ok(BikesAvailablePerType { mechanical, ebike })
+        }
+    }
+
+    deserializer.deserialize_seq(PerTypeVisitor)
+}
+
+fn deserialize_bool_int<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    let as_int: u8 = Deserialize::deserialize(deserializer)?;
+    Ok(as_int != 0)
 }
