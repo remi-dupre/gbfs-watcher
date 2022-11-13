@@ -3,12 +3,56 @@ use std::sync::Arc;
 
 use axum::extract::{Extension, Path, Query};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures::{future, stream, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
+use thiserror::Error as ThisError;
 
 use crate::gbfs::models;
 use crate::server::state::State;
+use crate::storage::journal;
+
+#[derive(Debug, Serialize, ThisError)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum Error {
+    #[error("station does not exist: {station_id}")]
+    UnknownStation { station_id: models::StationId },
+    #[error("answer is too large, try restraining it with ?from or ?to params")]
+    AnswerTooLarge,
+    #[error("journal error")]
+    JournalError {
+        #[from]
+        source: journal::StationStatusJournalError,
+    },
+}
+
+impl IntoResponse for Error {
+    fn into_response(self) -> Response {
+        let status = match &self {
+            Error::UnknownStation { .. } => StatusCode::NOT_FOUND,
+            Error::AnswerTooLarge => StatusCode::BAD_REQUEST,
+            Error::JournalError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+
+        #[derive(Serialize)]
+        struct Body {
+            status: String,
+            status_code: u16,
+            msg: String,
+            detail: Error,
+        }
+
+        let body = Body {
+            status: format!("{status}"),
+            status_code: status.into(),
+            msg: format!("{self}"),
+            detail: self,
+        };
+
+        (status, Json(body)).into_response()
+    }
+}
 
 #[derive(Serialize)]
 pub struct StationDetail {
@@ -18,15 +62,15 @@ pub struct StationDetail {
 }
 
 pub async fn get_station_detail(
-    id: Path<u64>,
+    Path(id): Path<u64>,
     state: Extension<Arc<State>>,
-) -> Result<Json<StationDetail>, StatusCode> {
+) -> Result<Json<StationDetail>, Error> {
     let info = state
         .stations_info
         .read()
         .await
         .get(&id)
-        .ok_or(StatusCode::NOT_FOUND)?
+        .ok_or(Error::UnknownStation { station_id: id })?
         .clone();
 
     let (current_status, journal_size) = {
@@ -103,31 +147,29 @@ pub struct StationHistory {
 }
 
 pub async fn get_station_history(
-    id: Path<u64>,
+    Path(id): Path<u64>,
     params: Query<HistoryQueryParams>,
     state: Extension<Arc<State>>,
-) -> Result<Json<StationHistory>, StatusCode> {
-    let detail = get_station_detail(Path(*id), state.clone()).await?.0;
+) -> Result<Json<StationHistory>, Error> {
+    let detail = get_station_detail(Path(id), state.clone()).await?.0;
     let station_status = state.stations_status.read().await;
 
     let journal = station_status
         .get(&id)
-        .ok_or(StatusCode::NOT_FOUND)?
+        .ok_or(Error::UnknownStation { station_id: id })?
         .read()
         .await;
 
     let history: Vec<_> = journal
         .iter_from(params.from)
-        .await
-        .expect("TODO")
+        .await?
         .try_take_while(|x| future::ready(Ok(x.last_reported <= params.to)))
         .take(10_001)
         .try_collect()
-        .await
-        .expect("TODO");
+        .await?;
 
     if history.len() > 10_000 {
-        todo!("too large");
+        return Err(Error::AnswerTooLarge);
     }
 
     let res = StationHistory { history, detail };

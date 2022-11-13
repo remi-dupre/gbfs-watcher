@@ -25,6 +25,7 @@ pub type AllStationsStatusJournal =
 pub enum Error {
     #[error("could not lock journals directory: {0}")]
     LockError(#[from] dir_lock::Error),
+
     #[error("error while calling API: {0}")]
     ApiError(#[from] api::Error),
 }

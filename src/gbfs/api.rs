@@ -3,12 +3,14 @@ use thiserror::Error as ThisError;
 
 use super::models;
 
-#[derive(ThisError, Debug)]
+#[derive(Debug, ThisError)]
 pub enum Error {
     #[error("could not request API: {0}")]
     Http(#[from] reqwest::Error),
+
     #[error("no feed available in API response")]
     EmptyFeeds,
+
     #[error("missing feed: {0}")]
     MissingFeed(&'static str),
 }

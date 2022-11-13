@@ -6,15 +6,16 @@ use std::sync::Arc;
 
 use futures::stream::{self, Stream, StreamExt, TryStreamExt};
 use futures::{future, Future};
+use serde::Serialize;
 use thiserror::Error as ThisError;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, SeekFrom};
 use tracing::debug;
 
+use super::binary;
 use crate::gbfs::models;
 use crate::storage::binary::Binary;
-
-use super::binary;
+use crate::util::serialize_with_display;
 
 /// Number of cached elements at the end of the journal
 const JOURNAL_CACHE_SIZE: usize = 4096; // This will fit in 200 MB for 1500 journals of 27 bits
@@ -24,17 +25,25 @@ const JOURNAL_CACHE_SIZE: usize = 4096; // This will fit in 200 MB for 1500 jour
 const SEQ_READ_CACHE_SIZE: usize = 128 * 1024; // 128 kB
 
 pub type StationStatusJournal = Journal<{ binary::STATION_STATUS_BIN_SIZE }, models::StationStatus>;
+pub type StationStatusJournalError = Error<models::StationId>;
 
-#[derive(Debug, ThisError)]
+#[derive(Debug, Serialize, ThisError)]
 pub enum Error<K> {
+    #[serde(serialize_with = "serialize_with_display")]
     #[error("could not open journal: {0}")]
     OpenError(std::io::Error),
+
+    #[serde(serialize_with = "serialize_with_display")]
     #[error("journal I/O error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[serde(serialize_with = "serialize_with_display")]
     #[error("file is too large for current architecture: {0}")]
     FileTooLarge(std::num::TryFromIntError),
+
     #[error("corrupted journal")]
     CorruptedJournal,
+
     #[error("trying to insert an entry small than last one: {last:?} >= {inserted:?}")]
     DecreasingKey { last: K, inserted: K },
 }
