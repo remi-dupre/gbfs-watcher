@@ -21,7 +21,7 @@ pub async fn run_app(state: Arc<State>, port: u16) {
         .layer(TraceLayer::new_for_http())
         .layer(Extension(state));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("listening on {}", addr);
 
     axum::Server::bind(&addr)
