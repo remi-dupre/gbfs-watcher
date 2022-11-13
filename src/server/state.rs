@@ -31,8 +31,9 @@ pub enum Error {
 
 pub struct State {
     journals_lock: DirLock,
-    api: GbfsApi,
-    stations_status: AllStationsStatusJournal,
+    pub api: GbfsApi,
+    pub stations_info: RwLock<Arc<HashMap<models::StationId, Arc<models::StationInformation>>>>,
+    pub stations_status: AllStationsStatusJournal,
 }
 
 impl State {
@@ -41,15 +42,39 @@ impl State {
         let api = GbfsApi::new(api_root_url).await?;
         let stations_status = AllStationsStatusJournal::default();
 
+        let stations_info = RwLock::new(Arc::new(
+            api.get_station_information()
+                .await?
+                .into_iter()
+                .map(|info| (info.station_id, Arc::new(info)))
+                .collect(),
+        ));
+
         let state = Arc::new(Self {
             journals_lock,
             api,
+            stations_info,
             stations_status,
         });
 
         tokio::spawn(station_status_update_daemon(state.clone()));
         Ok(state)
     }
+}
+
+async fn update_stations_info(state: &State) {
+    let stations_info = match state.api.get_station_information().await {
+        Ok(resp) => resp
+            .into_iter()
+            .map(|info| (info.station_id, Arc::new(info)))
+            .collect(),
+        Err(err) => {
+            error!("Could not fetch stations informations: {err}");
+            return;
+        }
+    };
+
+    *state.stations_info.write().await = Arc::new(stations_info);
 }
 
 async fn update_stations_status(state: &State) -> usize {
@@ -114,6 +139,6 @@ async fn station_status_update_daemon(state: Arc<State>) {
 
     loop {
         timer.tick().await;
-        update_stations_status(&state).await;
+        futures::join!(update_stations_status(&state), update_stations_info(&state));
     }
 }

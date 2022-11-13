@@ -74,8 +74,8 @@ impl GbfsApi {
         Ok(resp.data)
     }
 
-    pub async fn get_station_information(&self) -> Result<models::SystemInformation, Error> {
-        let resp: models::SystemInformationResponse = self
+    pub async fn get_station_information(&self) -> Result<Vec<models::StationInformation>, Error> {
+        let resp: models::StationInformationResponse = self
             .client
             .get(&self.station_information_url)
             .send()
@@ -83,7 +83,7 @@ impl GbfsApi {
             .json()
             .await?;
 
-        Ok(resp.data)
+        Ok(resp.data.stations)
     }
 
     pub async fn get_station_status(&self) -> Result<Vec<models::StationStatus>, Error> {

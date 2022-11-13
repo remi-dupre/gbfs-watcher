@@ -221,7 +221,7 @@ mod test {
     async fn read_journal() {
         let mut journal = TestObjJournal::new().await;
 
-        let objects: Vec<_> = (0..1024)
+        let objects: Vec<_> = (0..10)
             .map(|x| TestObj {
                 timestamp: x,
                 content: (x * x) as _,
@@ -247,7 +247,7 @@ mod test {
     async fn read_journal_with_duplicates() {
         let mut journal = TestObjJournal::new().await;
 
-        let objects: Vec<_> = (0..1024)
+        let objects: Vec<_> = (0..10)
             .map(|x| TestObj {
                 timestamp: x,
                 content: (x * x) as _,
