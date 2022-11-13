@@ -2,12 +2,12 @@ use std::io::{Cursor, Write};
 
 use crate::gbfs::models;
 
+pub const STATION_STATUS_BIN_SIZE: usize = 27;
+
 pub trait Binary<const BIN_SIZE: usize> {
     fn serialize(&self) -> [u8; BIN_SIZE];
     fn deserialize(buf: &[u8; BIN_SIZE]) -> Self;
 }
-
-pub const STATION_STATUS_BIN_SIZE: usize = 27;
 
 impl Binary<STATION_STATUS_BIN_SIZE> for models::StationStatus {
     fn serialize(&self) -> [u8; STATION_STATUS_BIN_SIZE] {

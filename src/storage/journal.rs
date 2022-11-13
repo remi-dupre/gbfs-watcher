@@ -1,8 +1,8 @@
-use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use futures::stream::{self, Stream, StreamExt, TryStreamExt};
 use thiserror::Error as ThisError;
@@ -32,6 +32,10 @@ pub enum Error<K> {
     IoError(#[from] std::io::Error),
     #[error("trying to insert an entry small than last one: {last:?} >= {inserted:?}")]
     DecreasingKey { last: K, inserted: K },
+    #[error("file is too large for current architecture: {0}")]
+    FileTooLarge(std::num::TryFromIntError),
+    #[error("corrupted journal")]
+    CorruptedJournal,
 }
 
 pub trait JournalObject {
@@ -68,7 +72,7 @@ impl JournalObject for models::StationStatus {
 pub struct Journal<const BIN_SIZE: usize, T> {
     size: usize,
     path: PathBuf,
-    cache: VecDeque<T>,
+    cache: VecDeque<Arc<T>>,
     _phantom: PhantomData<T>,
 }
 
@@ -77,21 +81,37 @@ where
     T: Clone + Debug + Eq + Binary<BIN_SIZE> + JournalObject,
 {
     pub async fn open(path: PathBuf) -> Result<Self, Error<T::Key>> {
-        let mut size = 0;
-        let mut cache = VecDeque::with_capacity(JOURNAL_CACHE_SIZE);
+        let (cache, size) = match File::open(&path).await {
+            Ok(mut file) => {
+                let metadata = file.metadata().await?;
+                let file_size: usize = metadata.len().try_into().map_err(Error::FileTooLarge)?;
 
-        match File::open(&path).await {
-            Ok(file) => {
+                if file_size % BIN_SIZE != 0 {
+                    return Err(Error::CorruptedJournal);
+                }
+
+                let mut cache = VecDeque::with_capacity(JOURNAL_CACHE_SIZE);
+                let size = file_size / BIN_SIZE;
+                let cache_size = std::cmp::min(size, JOURNAL_CACHE_SIZE);
+
+                file.seek(SeekFrom::End(
+                    -i64::try_from(cache_size * BIN_SIZE).expect("invalid file seek"),
+                ))
+                .await?;
+
                 stream_from_current_pos(file)
                     .await?
                     .try_for_each(|obj| {
-                        size += 1;
                         push_cache(&mut cache, obj);
                         futures::future::ready(Ok(()))
                     })
                     .await?;
+
+                (cache, size)
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                (VecDeque::with_capacity(JOURNAL_CACHE_SIZE), 0)
+            }
             Err(err) => return Err(Error::OpenError(err)),
         };
 
@@ -113,8 +133,8 @@ where
         self.size
     }
 
-    pub fn last(&self) -> Option<&T> {
-        self.cache.back()
+    pub fn last(&self) -> Option<Arc<T>> {
+        self.cache.back().cloned()
     }
 
     pub async fn insert(&mut self, obj: T) -> Result<bool, Error<T::Key>> {
@@ -146,7 +166,7 @@ where
     pub async fn iter_from(
         &self,
         index: usize,
-    ) -> Result<impl Stream<Item = Result<Cow<T>, Error<T::Key>>>, Error<T::Key>> {
+    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>> {
         let file_stream = {
             stream::iter({
                 if self.len().saturating_sub(index) <= JOURNAL_CACHE_SIZE {
@@ -159,13 +179,12 @@ where
                 }
             })
             .try_flatten()
-            .map(|res| res.map(Cow::Owned))
+            .map(|x| x.map(Arc::new))
         };
 
         let cache_stream = stream::iter(&self.cache)
             .skip((index + self.cache.len()).saturating_sub(self.len()))
-            .map(Cow::Borrowed)
-            .map(Ok);
+            .map(|x| Ok(x.clone()));
 
         let stream = file_stream
             .take(self.len() - self.cache.len())
@@ -176,7 +195,7 @@ where
 
     pub async fn iter(
         &self,
-    ) -> Result<impl Stream<Item = Result<Cow<T>, Error<T::Key>>>, Error<T::Key>> {
+    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>> {
         self.iter_from(0).await
     }
 }
@@ -201,14 +220,14 @@ pub async fn stream_from_current_pos<const BIN_SIZE: usize, T: Binary<BIN_SIZE> 
     Ok(stream)
 }
 
-fn push_cache<T>(cache: &mut VecDeque<T>, obj: T) -> Option<T> {
+fn push_cache<T>(cache: &mut VecDeque<Arc<T>>, obj: T) -> Option<Arc<T>> {
     let mut poped = None;
 
     while cache.len() >= JOURNAL_CACHE_SIZE {
         poped = cache.pop_front();
     }
 
-    cache.push_back(obj);
+    cache.push_back(Arc::new(obj));
     poped
 }
 
@@ -216,17 +235,20 @@ fn push_cache<T>(cache: &mut VecDeque<T>, obj: T) -> Option<T> {
 mod test {
     use super::*;
     use crate::tests::test_journal::{TestObj, TestObjJournal};
+    use tempdir::TempDir;
 
-    #[tokio::test]
-    async fn read_journal() {
-        let mut journal = TestObjJournal::new().await;
-
-        let objects: Vec<_> = (0..64)
+    fn build_fake_objects(range: impl Iterator<Item = u64>) -> Vec<TestObj> {
+        range
             .map(|x| TestObj {
                 timestamp: x,
                 content: (x * x) as _,
             })
-            .collect();
+            .collect()
+    }
+
+    async fn test_read_journal(range: impl Iterator<Item = u64>) {
+        let mut journal = TestObjJournal::new().await;
+        let objects = build_fake_objects(range);
 
         for obj in &objects {
             journal.insert(obj.clone()).await.unwrap();
@@ -236,7 +258,7 @@ mod test {
             .iter()
             .await
             .unwrap()
-            .map(|x| x.unwrap().into_owned())
+            .map(|x| x.unwrap().as_ref().clone())
             .collect()
             .await;
 
@@ -244,25 +266,37 @@ mod test {
     }
 
     #[tokio::test]
+    async fn read_journal() {
+        test_read_journal(0..64).await
+    }
+
+    #[tokio::test]
     async fn read_journal_large() {
-        let mut journal = TestObjJournal::new().await;
+        test_read_journal(0..10_000).await
+    }
 
-        let objects: Vec<_> = (0..10_000)
-            .map(|x| TestObj {
-                timestamp: x,
-                content: (x * x) as _,
-            })
-            .collect();
+    #[tokio::test]
+    async fn reopen_db() {
+        let tempdir = TempDir::new("test-journal").unwrap();
+        let path = tempdir.path().join("test.journal");
+        let objects = build_fake_objects(0..10_000);
 
-        for obj in &objects {
-            journal.insert(obj.clone()).await.unwrap();
+        {
+            let mut journal = Journal::open(path.clone()).await.unwrap();
+
+            for obj in &objects {
+                journal.insert(obj.clone()).await.unwrap();
+            }
         }
+
+        let journal = Journal::open(path).await.unwrap();
 
         let from_journal: Vec<_> = journal
             .iter()
             .await
             .unwrap()
-            .map(|x| x.unwrap().into_owned())
+            .map(|x| x.unwrap())
+            .map(|x: Arc<TestObj>| x.as_ref().clone())
             .collect()
             .await;
 
@@ -272,13 +306,7 @@ mod test {
     #[tokio::test]
     async fn read_journal_with_duplicates() {
         let mut journal = TestObjJournal::new().await;
-
-        let objects: Vec<_> = (0..64)
-            .map(|x| TestObj {
-                timestamp: x,
-                content: (x * x) as _,
-            })
-            .collect();
+        let objects = build_fake_objects(0..64);
 
         for obj in &objects {
             journal.insert(obj.clone()).await.unwrap();
@@ -290,7 +318,7 @@ mod test {
             .iter()
             .await
             .unwrap()
-            .map(|x| x.unwrap().into_owned())
+            .map(|x| x.unwrap().as_ref().clone())
             .collect()
             .await;
 

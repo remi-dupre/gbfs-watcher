@@ -14,6 +14,7 @@ use crate::server::state::State;
 pub struct StationDetail {
     pub journal_size: usize,
     pub info: Arc<models::StationInformation>,
+    pub current_status: Option<Arc<models::StationStatus>>,
 }
 
 #[derive(Serialize)]
@@ -27,17 +28,21 @@ pub async fn get_stations(state: Extension<Arc<State>>) -> Json<Stations> {
 
     let stations = stream::iter(stations.iter())
         .filter_map(|(station_id, info)| async move {
+            let (current_status, journal_size) = {
+                if let Some(journal) = stations_status.get(station_id) {
+                    let journal = journal.read().await;
+                    (journal.last(), journal.len())
+                } else {
+                    (None, 0)
+                }
+            };
+
             Some((
                 *station_id,
                 StationDetail {
-                    journal_size: {
-                        if let Some(journal) = stations_status.get(station_id) {
-                            journal.read().await.len()
-                        } else {
-                            0
-                        }
-                    },
+                    journal_size,
                     info: info.clone(),
+                    current_status,
                 },
             ))
         })
@@ -60,14 +65,20 @@ pub async fn get_station_detail(
         .ok_or(StatusCode::NOT_FOUND)?
         .clone();
 
-    let journal_size = {
+    let (current_status, journal_size) = {
         if let Some(journal) = state.stations_status.read().await.get(&id) {
-            journal.read().await.len()
+            let journal = journal.read().await;
+            (journal.last(), journal.len())
         } else {
-            0
+            (None, 0)
         }
     };
 
-    let resp = StationDetail { journal_size, info };
+    let resp = StationDetail {
+        journal_size,
+        info,
+        current_status,
+    };
+
     Ok(Json(resp))
 }
