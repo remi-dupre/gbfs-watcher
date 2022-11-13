@@ -13,6 +13,10 @@ pub async fn run_app(state: Arc<State>, port: u16) {
     let app = Router::new()
         .route("/stations", get(routes::stations::get_stations))
         .route("/stations/:id", get(routes::stations::get_station_detail))
+        .route(
+            "/stations/:id/history",
+            get(routes::stations::get_station_history),
+        )
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(Extension(state));

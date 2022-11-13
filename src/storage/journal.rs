@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::stream::{self, Stream, StreamExt, TryStreamExt};
+use futures::{future, Future};
 use thiserror::Error as ThisError;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, SeekFrom};
@@ -103,7 +104,7 @@ where
                     .await?
                     .try_for_each(|obj| {
                         push_cache(&mut cache, obj);
-                        futures::future::ready(Ok(()))
+                        future::ready(Ok(()))
                     })
                     .await?;
 
@@ -174,28 +175,8 @@ where
         &self,
         index: usize,
     ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>> {
-        let file_stream = {
-            stream::iter({
-                if self.len().saturating_sub(index) <= JOURNAL_CACHE_SIZE {
-                    None
-                } else {
-                    let file_index = (index * BIN_SIZE).try_into().expect("invalid file index");
-                    let mut file = File::open(&self.path).await?;
-                    file.seek(SeekFrom::Start(file_index)).await?;
-                    Some(stream_from_current_pos(file).await)
-                }
-            })
-            .try_flatten()
-            .map(|x| x.map(Arc::new))
-            .take(self.len().saturating_sub(index + self.cache.len()))
-        };
-
-        let cache_stream = stream::iter(&self.cache)
-            .skip((index + self.cache.len()).saturating_sub(self.len()))
-            .map(|x| Ok(x.clone()));
-
-        let stream = file_stream.chain(cache_stream);
-        Ok(stream)
+        self.iter_from_index_impl(index, || File::open(&self.path))
+            .await
     }
 
     pub async fn iter_from(
@@ -209,6 +190,8 @@ where
             todo!("empty case not yet implemented")
         }
 
+        // TODO: use once_cell so that it is not required to open file when hiting cache only,
+        //       may also simplfy iter_from_index_impl?
         let mut file = File::open(&self.path).await?;
         let mut min = 0;
         let mut max = self.len();
@@ -228,7 +211,40 @@ where
             }
         }
 
-        self.iter_from_index(min).await
+        self.iter_from_index_impl(min, move || future::ready(Ok(file)))
+            .await
+    }
+
+    async fn iter_from_index_impl<F>(
+        &self,
+        index: usize,
+        build_file: impl FnOnce() -> F,
+    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>>
+    where
+        F: Future<Output = Result<File, std::io::Error>>,
+    {
+        let file_stream = {
+            stream::iter({
+                if self.len().saturating_sub(index) <= JOURNAL_CACHE_SIZE {
+                    None
+                } else {
+                    let file_index = (index * BIN_SIZE).try_into().expect("invalid file index");
+                    let mut file = build_file().await?;
+                    file.seek(SeekFrom::Start(file_index)).await?;
+                    Some(stream_from_current_pos(file).await)
+                }
+            })
+            .try_flatten()
+            .map(|x| x.map(Arc::new))
+            .take(self.len().saturating_sub(index + self.cache.len()))
+        };
+
+        let cache_stream = stream::iter(&self.cache)
+            .skip((index + self.cache.len()).saturating_sub(self.len()))
+            .map(|x| Ok(x.clone()));
+
+        let stream = file_stream.chain(cache_stream);
+        Ok(stream)
     }
 
     async fn get_impl(
