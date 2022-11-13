@@ -22,7 +22,7 @@ pub struct Stations {
     pub stations: HashMap<models::StationId, StationDetail>,
 }
 
-pub async fn get_stations(state: Extension<Arc<State>>) -> Json<Stations> {
+pub async fn get_stations<'a>(state: Extension<Arc<State>>) -> Json<Stations> {
     let stations = state.stations_info.read().await.clone();
     let stations_status = &state.stations_status.read().await;
 

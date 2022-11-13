@@ -30,12 +30,12 @@ pub enum Error<K> {
     OpenError(std::io::Error),
     #[error("journal I/O error: {0}")]
     IoError(#[from] std::io::Error),
-    #[error("trying to insert an entry small than last one: {last:?} >= {inserted:?}")]
-    DecreasingKey { last: K, inserted: K },
     #[error("file is too large for current architecture: {0}")]
     FileTooLarge(std::num::TryFromIntError),
     #[error("corrupted journal")]
     CorruptedJournal,
+    #[error("trying to insert an entry small than last one: {last:?} >= {inserted:?}")]
+    DecreasingKey { last: K, inserted: K },
 }
 
 pub trait JournalObject {
@@ -158,12 +158,19 @@ where
             .await?;
 
         file.write_all(&obj.serialize()).await?;
+        file.flush().await?;
         push_cache(&mut self.cache, obj);
         self.size += 1;
         Ok(true)
     }
 
-    pub async fn iter_from(
+    pub async fn iter(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>> {
+        self.iter_from_index(0).await
+    }
+
+    pub async fn iter_from_index(
         &self,
         index: usize,
     ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>> {
@@ -180,23 +187,75 @@ where
             })
             .try_flatten()
             .map(|x| x.map(Arc::new))
+            .take(self.len().saturating_sub(index + self.cache.len()))
         };
 
         let cache_stream = stream::iter(&self.cache)
             .skip((index + self.cache.len()).saturating_sub(self.len()))
             .map(|x| Ok(x.clone()));
 
-        let stream = file_stream
-            .take(self.len() - self.cache.len())
-            .chain(cache_stream);
-
+        let stream = file_stream.chain(cache_stream);
         Ok(stream)
     }
 
-    pub async fn iter(
+    pub async fn iter_from(
         &self,
-    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>> {
-        self.iter_from(0).await
+        lower: T::Key,
+    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>>
+    where
+        T::Key: std::fmt::Display,
+    {
+        if self.is_empty() {
+            todo!("empty case not yet implemented")
+        }
+
+        let mut file = File::open(&self.path).await?;
+        let mut min = 0;
+        let mut max = self.len();
+
+        while max - min > 1 {
+            let mid = (max + min + 1) / 2;
+
+            let mid_obj = self
+                .get_impl(mid, &mut file)
+                .await?
+                .expect("journal shrank during iteration");
+
+            if mid_obj.get_key() <= lower {
+                min = mid;
+            } else {
+                max = mid;
+            }
+        }
+
+        self.iter_from_index(min).await
+    }
+
+    async fn get_impl(
+        &self,
+        index: usize,
+        file: &mut File,
+    ) -> Result<Option<Arc<T>>, Error<T::Key>> {
+        Ok({
+            if index >= self.len() {
+                None
+            } else if self.len() - index < self.cache.len() {
+                self.cache
+                    .get(index - (self.len() - self.cache.len()))
+                    .cloned()
+            } else {
+                let mut buffer = [0; BIN_SIZE];
+
+                file.seek(SeekFrom::Start(
+                    (index * BIN_SIZE).try_into().expect("invalid seek"),
+                ))
+                .await?;
+
+                file.read_exact(&mut buffer).await?;
+                let obj = T::deserialize(&buffer);
+                Some(Arc::new(obj))
+            }
+        })
     }
 }
 
@@ -285,7 +344,7 @@ mod test {
             let mut journal = Journal::open(path.clone()).await.unwrap();
 
             for obj in &objects {
-                journal.insert(obj.clone()).await.unwrap();
+                assert!(journal.insert(obj.clone()).await.unwrap());
             }
         }
 
@@ -309,9 +368,9 @@ mod test {
         let objects = build_fake_objects(0..64);
 
         for obj in &objects {
-            journal.insert(obj.clone()).await.unwrap();
-            journal.insert(obj.clone()).await.unwrap();
-            journal.insert(obj.clone()).await.unwrap();
+            assert!(journal.insert(obj.clone()).await.unwrap());
+            assert!(!journal.insert(obj.clone()).await.unwrap());
+            assert!(!journal.insert(obj.clone()).await.unwrap());
         }
 
         let from_journal: Vec<_> = journal
@@ -323,5 +382,81 @@ mod test {
             .await;
 
         assert_eq!(objects, from_journal);
+    }
+
+    #[tokio::test]
+    async fn iter_from_index() {
+        let mut journal = TestObjJournal::new().await;
+        let objects = build_fake_objects(0..10_000);
+
+        for obj in &objects {
+            assert!(journal.insert(obj.clone()).await.unwrap());
+        }
+
+        let from_journal_0: Vec<_> = journal
+            .iter_from_index(0)
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().as_ref().clone())
+            .collect()
+            .await;
+
+        let from_journal_1000: Vec<_> = journal
+            .iter_from_index(1000)
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().as_ref().clone())
+            .collect()
+            .await;
+
+        let from_journal_9990: Vec<_> = journal
+            .iter_from_index(9990)
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().as_ref().clone())
+            .collect()
+            .await;
+
+        assert_eq!(objects[0..], from_journal_0);
+        assert_eq!(objects[1000..], from_journal_1000);
+        assert_eq!(objects[9990..], from_journal_9990);
+    }
+
+    #[tokio::test]
+    async fn iter_from() {
+        let mut journal = TestObjJournal::new().await;
+        let objects = build_fake_objects(0..10_000);
+
+        for obj in &objects {
+            assert!(journal.insert(obj.clone()).await.unwrap());
+        }
+
+        let from_journal_0: Vec<_> = journal
+            .iter_from(0)
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().as_ref().clone())
+            .collect()
+            .await;
+
+        let from_journal_1000: Vec<_> = journal
+            .iter_from(1000)
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().as_ref().clone())
+            .collect()
+            .await;
+
+        let from_journal_9990: Vec<_> = journal
+            .iter_from(9990)
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().as_ref().clone())
+            .collect()
+            .await;
+
+        assert_eq!(objects[0..], from_journal_0);
+        assert_eq!(objects[1000..], from_journal_1000);
+        assert_eq!(objects[9990..], from_journal_9990);
     }
 }
