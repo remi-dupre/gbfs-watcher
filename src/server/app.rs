@@ -11,7 +11,8 @@ use super::state::State;
 
 pub async fn run_app(state: Arc<State>, port: u16) {
     let app = Router::new()
-        .route("/stations", get(routes::stations::get))
+        .route("/stations", get(routes::stations::get_stations))
+        .route("/stations/:id", get(routes::stations::get_station_detail))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(Extension(state));

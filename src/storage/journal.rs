@@ -163,7 +163,7 @@ where
         };
 
         let cache_stream = stream::iter(&self.cache)
-            .skip((JOURNAL_CACHE_SIZE + index).saturating_sub(self.len()))
+            .skip((index + self.cache.len()).saturating_sub(self.len()))
             .map(Cow::Borrowed)
             .map(Ok);
 
@@ -221,7 +221,33 @@ mod test {
     async fn read_journal() {
         let mut journal = TestObjJournal::new().await;
 
-        let objects: Vec<_> = (0..10)
+        let objects: Vec<_> = (0..64)
+            .map(|x| TestObj {
+                timestamp: x,
+                content: (x * x) as _,
+            })
+            .collect();
+
+        for obj in &objects {
+            journal.insert(obj.clone()).await.unwrap();
+        }
+
+        let from_journal: Vec<_> = journal
+            .iter()
+            .await
+            .unwrap()
+            .map(|x| x.unwrap().into_owned())
+            .collect()
+            .await;
+
+        assert_eq!(objects, from_journal);
+    }
+
+    #[tokio::test]
+    async fn read_journal_large() {
+        let mut journal = TestObjJournal::new().await;
+
+        let objects: Vec<_> = (0..10_000)
             .map(|x| TestObj {
                 timestamp: x,
                 content: (x * x) as _,
@@ -247,7 +273,7 @@ mod test {
     async fn read_journal_with_duplicates() {
         let mut journal = TestObjJournal::new().await;
 
-        let objects: Vec<_> = (0..10)
+        let objects: Vec<_> = (0..64)
             .map(|x| TestObj {
                 timestamp: x,
                 content: (x * x) as _,
