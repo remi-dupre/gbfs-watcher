@@ -8,6 +8,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use thiserror::Error as ThisError;
 use tokio::sync::RwLock;
+use tokio::time::MissedTickBehavior;
 use tracing::{error, info};
 
 use crate::gbfs::api::{self, GbfsApi};
@@ -137,6 +138,7 @@ async fn update_stations_status(state: &State) -> usize {
 
 async fn station_status_update_daemon(state: Arc<State>) {
     let mut timer = tokio::time::interval(Duration::from_secs(UPDATE_STATIONS_STATUS_FREQUENCY));
+    timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         timer.tick().await;

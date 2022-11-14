@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use futures::stream::{self, Stream, StreamExt, TryStreamExt};
 use futures::{future, Future};
@@ -82,7 +81,7 @@ impl JournalObject for models::StationStatus {
 pub struct Journal<const BIN_SIZE: usize, T> {
     size: usize,
     path: PathBuf,
-    cache: VecDeque<Arc<T>>,
+    cache: VecDeque<T>,
     _phantom: PhantomData<T>,
 }
 
@@ -143,8 +142,8 @@ where
         self.size
     }
 
-    pub fn last(&self) -> Option<Arc<T>> {
-        self.cache.back().cloned()
+    pub fn last(&self) -> Option<&T> {
+        self.cache.back()
     }
 
     pub async fn insert(&mut self, obj: T) -> Result<bool, Error<T::Key>> {
@@ -176,14 +175,14 @@ where
 
     pub async fn iter(
         &self,
-    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>> {
+    ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>> + '_, Error<T::Key>> {
         self.iter_from_index(0).await
     }
 
     pub async fn iter_from_index(
         &self,
         index: usize,
-    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>> {
+    ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>> + '_, Error<T::Key>> {
         self.iter_from_index_impl(index, || File::open(&self.path))
             .await
     }
@@ -191,7 +190,7 @@ where
     pub async fn iter_from(
         &self,
         lower: T::Key,
-    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>>
+    ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>> + '_, Error<T::Key>>
     where
         T::Key: std::fmt::Display,
     {
@@ -228,7 +227,7 @@ where
         &self,
         index: usize,
         build_file: impl FnOnce() -> F,
-    ) -> Result<impl Stream<Item = Result<Arc<T>, Error<T::Key>>> + '_, Error<T::Key>>
+    ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>> + '_, Error<T::Key>>
     where
         F: Future<Output = Result<File, std::io::Error>>,
     {
@@ -244,7 +243,6 @@ where
                 }
             })
             .try_flatten()
-            .map(|x| x.map(Arc::new))
             .take(self.len().saturating_sub(index + self.cache.len()))
         };
 
@@ -256,11 +254,7 @@ where
         Ok(stream)
     }
 
-    async fn get_impl(
-        &self,
-        index: usize,
-        file: &mut File,
-    ) -> Result<Option<Arc<T>>, Error<T::Key>> {
+    async fn get_impl(&self, index: usize, file: &mut File) -> Result<Option<T>, Error<T::Key>> {
         Ok({
             if index >= self.len() {
                 None
@@ -278,7 +272,7 @@ where
 
                 file.read_exact(&mut buffer).await?;
                 let obj = T::deserialize(&buffer);
-                Some(Arc::new(obj))
+                Some(obj)
             }
         })
     }
@@ -304,14 +298,14 @@ pub async fn stream_from_current_pos<const BIN_SIZE: usize, T: Binary<BIN_SIZE> 
     Ok(stream)
 }
 
-fn push_cache<T>(cache: &mut VecDeque<Arc<T>>, obj: T) -> Option<Arc<T>> {
+fn push_cache<T>(cache: &mut VecDeque<T>, obj: T) -> Option<T> {
     let mut poped = None;
 
     while cache.len() >= JOURNAL_CACHE_SIZE {
         poped = cache.pop_front();
     }
 
-    cache.push_back(Arc::new(obj));
+    cache.push_back(obj);
     poped
 }
 
@@ -342,7 +336,7 @@ mod test {
             .iter()
             .await
             .unwrap()
-            .map(|x| x.unwrap().as_ref().clone())
+            .map(|x| x.unwrap())
             .collect()
             .await;
 
@@ -380,7 +374,6 @@ mod test {
             .await
             .unwrap()
             .map(|x| x.unwrap())
-            .map(|x: Arc<TestObj>| x.as_ref().clone())
             .collect()
             .await;
 
@@ -402,7 +395,7 @@ mod test {
             .iter()
             .await
             .unwrap()
-            .map(|x| x.unwrap().as_ref().clone())
+            .map(|x| x.unwrap())
             .collect()
             .await;
 
@@ -422,7 +415,7 @@ mod test {
             .iter_from_index(0)
             .await
             .unwrap()
-            .map(|x| x.unwrap().as_ref().clone())
+            .map(|x| x.unwrap())
             .collect()
             .await;
 
@@ -430,7 +423,7 @@ mod test {
             .iter_from_index(1000)
             .await
             .unwrap()
-            .map(|x| x.unwrap().as_ref().clone())
+            .map(|x| x.unwrap())
             .collect()
             .await;
 
@@ -438,7 +431,7 @@ mod test {
             .iter_from_index(9990)
             .await
             .unwrap()
-            .map(|x| x.unwrap().as_ref().clone())
+            .map(|x| x.unwrap())
             .collect()
             .await;
 
@@ -460,7 +453,7 @@ mod test {
             .iter_from(0)
             .await
             .unwrap()
-            .map(|x| x.unwrap().as_ref().clone())
+            .map(|x| x.unwrap())
             .collect()
             .await;
 
@@ -468,7 +461,7 @@ mod test {
             .iter_from(1000)
             .await
             .unwrap()
-            .map(|x| x.unwrap().as_ref().clone())
+            .map(|x| x.unwrap())
             .collect()
             .await;
 
@@ -476,7 +469,7 @@ mod test {
             .iter_from(9990)
             .await
             .unwrap()
-            .map(|x| x.unwrap().as_ref().clone())
+            .map(|x| x.unwrap())
             .collect()
             .await;
 
