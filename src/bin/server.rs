@@ -4,7 +4,7 @@ use clap::Parser;
 use futures::stream::StreamExt;
 use serde::Serialize;
 use signal_hook_tokio::Signals;
-use tracing::{info, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use gbfs_watcher::server::app::run_app;
@@ -55,5 +55,7 @@ async fn main() {
 
     if let Some(signal) = signals.next().await {
         info!("Received signal {signal}: exiting application");
+    } else {
+        warn!("Normal exit without receiving a signal");
     }
 }
