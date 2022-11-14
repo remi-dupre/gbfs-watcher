@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::handler::Handler;
 use axum::routing::get;
-use axum::{Extension, Router};
+use axum::Router;
 use tower_http::compression::CompressionLayer;
 use tower_http::trace::TraceLayer;
 
@@ -37,10 +37,7 @@ pub async fn run_app(state: Arc<State>, port: u16) {
         )
         .fallback(handle_unmatched_path.into_service())
         .layer(CompressionLayer::new())
-        .layer(TraceLayer::new_for_http())
-        .layer(Extension(state));
-
-    // let app = app
+        .layer(TraceLayer::new_for_http());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("listening on {}", addr);
@@ -48,5 +45,5 @@ pub async fn run_app(state: Arc<State>, port: u16) {
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .await
-        .expect("HTTP server closed unexpectedly");
+        .expect("HTTP server closed unexpectedly")
 }

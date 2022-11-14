@@ -195,7 +195,7 @@ where
         T::Key: std::fmt::Display,
     {
         if self.is_empty() {
-            todo!("empty case not yet implemented")
+            return Ok(stream::empty().left_stream());
         }
 
         // TODO: use once_cell so that it is not required to open file when hiting cache only,
@@ -219,8 +219,10 @@ where
             }
         }
 
-        self.iter_from_index_impl(min, move || future::ready(Ok(file)))
-            .await
+        Ok(self
+            .iter_from_index_impl(min, move || future::ready(Ok(file)))
+            .await?
+            .right_stream())
     }
 
     async fn iter_from_index_impl<F>(
@@ -232,18 +234,18 @@ where
         F: Future<Output = Result<File, std::io::Error>>,
     {
         let file_stream = {
-            stream::iter({
-                if self.len().saturating_sub(index) <= JOURNAL_CACHE_SIZE {
-                    None
-                } else {
-                    let file_index = (index * BIN_SIZE).try_into().expect("invalid file index");
-                    let mut file = build_file().await?;
-                    file.seek(SeekFrom::Start(file_index)).await?;
-                    Some(stream_from_current_pos(file).await)
-                }
-            })
-            .try_flatten()
-            .take(self.len().saturating_sub(index + self.cache.len()))
+            if self.len().saturating_sub(index) <= JOURNAL_CACHE_SIZE {
+                stream::empty().left_stream()
+            } else {
+                let file_index = (index * BIN_SIZE).try_into().expect("invalid file index");
+                let mut file = build_file().await?;
+                file.seek(SeekFrom::Start(file_index)).await?;
+
+                stream_from_current_pos(file)
+                    .await?
+                    .take(self.len().saturating_sub(index + self.cache.len()))
+                    .right_stream()
+            }
         };
 
         let cache_stream = stream::iter(&self.cache)
@@ -324,7 +326,7 @@ mod test {
             .collect()
     }
 
-    async fn test_read_journal(range: impl Iterator<Item = u64>) {
+    async fn test_read_journal(range: impl Iterator<Item = u64>) -> TestObjJournal {
         let mut journal = TestObjJournal::new().await;
         let objects = build_fake_objects(range);
 
@@ -341,16 +343,17 @@ mod test {
             .await;
 
         assert_eq!(objects, from_journal);
+        journal
     }
 
     #[tokio::test]
     async fn read_journal() {
-        test_read_journal(0..64).await
+        test_read_journal(0..64).await;
     }
 
     #[tokio::test]
     async fn read_journal_large() {
-        test_read_journal(0..10_000).await
+        test_read_journal(0..10_000).await;
     }
 
     #[tokio::test]
@@ -476,5 +479,12 @@ mod test {
         assert_eq!(objects[0..], from_journal_0);
         assert_eq!(objects[1000..], from_journal_1000);
         assert_eq!(objects[9990..], from_journal_9990);
+    }
+
+    #[tokio::test]
+    async fn iter_empty() {
+        let journal = test_read_journal(0..0).await;
+        assert!(journal.iter_from(1).await.unwrap().count().await == 0);
+        assert!(journal.iter_from_index(1).await.unwrap().count().await == 0);
     }
 }
