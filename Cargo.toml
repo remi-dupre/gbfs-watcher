@@ -20,7 +20,7 @@ tokio = { version = "1.21.2", features = ["macros", "fs", "sync", "io-util", "ti
 tower = "0.4.13"
 tower-http = { version = "0.3.4", default-features = false, features = ["compression-full", "trace"] }
 tracing = "0.1.37"
-tracing-subscriber = "0.3.16"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 
 [dev-dependencies]
 tempdir = "0.3.7"

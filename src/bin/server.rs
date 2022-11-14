@@ -4,8 +4,7 @@ use clap::Parser;
 use futures::stream::StreamExt;
 use serde::Serialize;
 use signal_hook_tokio::Signals;
-use tracing::{info, warn, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::{info, warn};
 
 use gbfs_watcher::server::app::run_app;
 use gbfs_watcher::server::state::State;
@@ -31,12 +30,17 @@ pub struct Args {
 
 #[tokio::main]
 async fn main() {
-    tracing::subscriber::set_global_default(
-        FmtSubscriber::builder()
-            .with_max_level(Level::DEBUG)
-            .finish(),
-    )
-    .expect("setting up default subscriber failed");
+    let filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into())
+        .from_env()
+        .expect("could not build filter");
+
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_target(false)
+        .with_env_filter(filter)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting global subscriber failed");
 
     let args = Args::parse();
     let display_args = serde_json::to_string_pretty(&args).expect("could not display args");
