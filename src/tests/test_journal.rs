@@ -9,7 +9,7 @@ use crate::storage::journal::{Journal, JournalObject};
 
 pub type TestObjJournal = TestJournal<24, TestObj>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TestObj {
     pub timestamp: u64,
     pub content: u128,

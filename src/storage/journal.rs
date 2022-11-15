@@ -331,7 +331,7 @@ mod test {
         let objects = build_fake_objects(range);
 
         for obj in &objects {
-            journal.insert(obj.clone()).await.unwrap();
+            journal.insert(*obj).await.unwrap();
         }
 
         let from_journal: Vec<_> = journal
@@ -366,7 +366,7 @@ mod test {
             let mut journal = Journal::open(path.clone()).await.unwrap();
 
             for obj in &objects {
-                assert!(journal.insert(obj.clone()).await.unwrap());
+                assert!(journal.insert(*obj).await.unwrap());
             }
         }
 
@@ -376,7 +376,7 @@ mod test {
             .iter()
             .await
             .unwrap()
-            .map(|x| x.unwrap())
+            .map(|x: Result<TestObj, _>| x.unwrap())
             .collect()
             .await;
 
@@ -389,9 +389,9 @@ mod test {
         let objects = build_fake_objects(0..64);
 
         for obj in &objects {
-            assert!(journal.insert(obj.clone()).await.unwrap());
-            assert!(!journal.insert(obj.clone()).await.unwrap());
-            assert!(!journal.insert(obj.clone()).await.unwrap());
+            assert!(journal.insert(*obj).await.unwrap());
+            assert!(!journal.insert(*obj).await.unwrap());
+            assert!(!journal.insert(*obj).await.unwrap());
         }
 
         let from_journal: Vec<_> = journal
@@ -411,7 +411,7 @@ mod test {
         let objects = build_fake_objects(0..10_000);
 
         for obj in &objects {
-            assert!(journal.insert(obj.clone()).await.unwrap());
+            assert!(journal.insert(*obj).await.unwrap());
         }
 
         let from_journal_0: Vec<_> = journal
@@ -449,7 +449,7 @@ mod test {
         let objects = build_fake_objects(0..10_000);
 
         for obj in &objects {
-            assert!(journal.insert(obj.clone()).await.unwrap());
+            assert!(journal.insert(*obj).await.unwrap());
         }
 
         let from_journal_0: Vec<_> = journal
