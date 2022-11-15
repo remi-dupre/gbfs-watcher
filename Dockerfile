@@ -2,13 +2,16 @@
 # --- Builder image
 # ---
 
-FROM rust:slim-bullseye AS builder
+FROM debian:bullseye-slim AS builder
 ENV DEBIAN_FRONTEND noninteractive
-RUN apt-get update && apt-get install -y libssl-dev pkg-config
+RUN apt-get update && apt-get install -y build-essential curl libssl-dev pkg-config
+
+# Install cargo nightly
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+ENV PATH=/root/.cargo/bin:$PATH
+
 WORKDIR /srv
 COPY . ./
-
-RUN rustup toolchain install nightly
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/srv/target               \
