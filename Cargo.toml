@@ -8,9 +8,9 @@ edition = "2021"
 [dependencies]
 axum = { version = "0.5.17", default-features = false, features = ["json", "http1", "http2", "tower-log", "query"] }
 chrono = { version = "0.4.23", default-features = false, features = ["clock"] }
-clap = { version = "4.0.23", features = ["derive"] }
+clap = { version = "4.0.24", features = ["derive"] }
 futures = "0.3.25"
-reqwest = { version = "0.11.12", features = ["json"] }
+reqwest = { version = "0.11.12", default-features = false, features = ["json", "rustls-tls"]}
 serde = { version = "1.0.147", features = ["derive", "rc"] }
 serde_json = "1.0.87"
 signal-hook = "0.3.14"
@@ -27,5 +27,6 @@ tempdir = "0.3.7"
 
 [profile.production]
 inherits = "release"
-lto = "fat"
 codegen-units = 1
+lto = "fat"
+strip = true

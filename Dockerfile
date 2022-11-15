@@ -2,14 +2,14 @@
 # --- Builder image
 # ---
 
-FROM debian:bullseye-slim AS builder
-ENV DEBIAN_FRONTEND noninteractive
-RUN apt-get update && apt-get install -y build-essential curl libssl-dev pkg-config
+FROM alpine:3 AS builder
+RUN apk add curl gcc musl-dev pkgconfig
 
-# Install cargo nightly
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly
+# Install cargo nightly, which is required for the "sparse-registry" feature
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly --profile minimal
 ENV PATH=/root/.cargo/bin:$PATH
 
+# Setup build env
 WORKDIR /srv
 COPY . ./
 
@@ -24,8 +24,7 @@ RUN --mount=type=cache,target=/srv/target \
 # --- Published image
 # ---
 
-FROM debian:bullseye-slim
-RUN apt-get update && apt-get install openssl ca-certificates
+FROM alpine:3
 ENV RUST_LOG "info"
 COPY --from=builder /srv/server /srv/server
 ENTRYPOINT ["/srv/server"]
