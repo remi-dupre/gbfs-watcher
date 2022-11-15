@@ -5,16 +5,26 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures::{Future, StreamExt};
+use chrono::offset::{Local, Utc};
+use futures::{future, stream, Future, Stream, StreamExt, TryStreamExt};
 use thiserror::Error as ThisError;
-use tokio::sync::RwLock;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::MissedTickBehavior;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info};
 
 use crate::gbfs::api::{self, GbfsApi};
 use crate::gbfs::models;
 use crate::storage::dir_lock::{self, DirLock};
-use crate::storage::journal::StationStatusJournal;
+use crate::storage::dump::{self, DumpRegistry};
+use crate::storage::journal::{StationStatusJournal, StationStatusJournalError};
+
+/// Size of the buffer while performing dumps (in number of journal entries)
+const DUMP_CACHE_SIZE: usize = 10 * 1024;
+
+/// Concurent journals that are being dumped at the same time
+const CONCURENT_JOURNAL_DUMPS: usize = 32;
 
 /// Number of concurent insertions that will be performed on updates
 const CONCURENT_JOURNAL_WRITES: usize = 128;
@@ -25,6 +35,9 @@ const UPDATE_STATIONS_STATUS_FREQUENCY: Duration = Duration::from_secs(2 * 60); 
 /// Update frequency for all stations, in seconds
 const UPDATE_STATIONS_INFO_FREQUENCY: Duration = Duration::from_secs(60 * 60); // 1h
 
+/// Dump frequency, in seconds
+const DUMP_FREQUENCY: i64 = 6 * 60 * 60; // 12h
+
 pub type AllStationsStatusJournal =
     RwLock<HashMap<models::StationId, RwLock<StationStatusJournal>>>;
 
@@ -33,20 +46,32 @@ pub enum Error {
     #[error("could not lock journals directory: {0}")]
     LockError(#[from] dir_lock::Error),
 
+    #[error("dump registry error: {0}")]
+    DumpError(#[from] dump::Error),
+
     #[error("error while calling API: {0}")]
     ApiError(#[from] api::Error),
+
+    #[error("error while accessing journal: {0}")]
+    JournalError(#[from] StationStatusJournalError),
 }
 
 pub struct State {
     journals_lock: DirLock,
-    pub api: GbfsApi,
+    api: GbfsApi,
+    dumps_registry: DumpRegistry,
     pub stations_info: RwLock<Arc<HashMap<models::StationId, Arc<models::StationInformation>>>>,
     pub stations_status: AllStationsStatusJournal,
 }
 
 impl State {
-    pub async fn new(api_root_url: &str, journals_path: PathBuf) -> Result<Arc<Self>, Error> {
+    pub async fn new(
+        api_root_url: &str,
+        journals_path: PathBuf,
+        dumps_path: PathBuf,
+    ) -> Result<Arc<Self>, Error> {
         let journals_lock = DirLock::lock(journals_path).await?;
+        let dumps_registry = DumpRegistry::new(dumps_path).await?;
         let api = GbfsApi::new(api_root_url).await?;
         let stations_status = AllStationsStatusJournal::default();
 
@@ -61,9 +86,12 @@ impl State {
         let state = Arc::new(Self {
             journals_lock,
             api,
+            dumps_registry,
             stations_info,
             stations_status,
         });
+
+        state.clone().update_stations_status().await;
 
         spawn_update_daemon(
             Self::update_stations_status,
@@ -77,8 +105,89 @@ impl State {
             state.clone(),
         );
 
+        state
+            .clone()
+            .spawn_update_dumps_daemon(chrono::Duration::seconds(DUMP_FREQUENCY));
+
+        let mut dump_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("/tmp/dump_test.jsonl")
+            .await
+            .unwrap();
+
+        let mut dump = Box::pin(state.clone().dump().await);
+
+        while let Some(status) = dump.next().await {
+            let mut json = serde_json::to_string(&status.unwrap()).unwrap();
+            json.push('\n');
+            dump_file.write_all(json.as_bytes()).await.unwrap();
+        }
+
         Ok(state)
     }
+
+    pub async fn dump(self: Arc<Self>) -> impl Stream<Item = Result<models::StationStatus, Error>> {
+        let start_ts: u64 = Utc::now()
+            .timestamp()
+            .try_into()
+            .expect("invalid timestamp");
+
+        let (sender, receiver) = mpsc::channel(DUMP_CACHE_SIZE);
+
+        tokio::spawn(async move {
+            let stations_status = self.stations_status.read().await;
+
+            stream::iter(stations_status.iter())
+                .map(|(station_id, journal)| {
+                    let sender = sender.clone();
+
+                    async move {
+                        let sender = &sender;
+
+                        // let send = |val| async move {
+                        //     if let Err(err) = sender.send(val).await {
+                        //         warn!("Dump aborted for station {station_id}: {err}");
+                        //     }
+                        // };
+
+                        let journal = journal.read().await;
+
+                        let mut iter = match journal.iter().await {
+                            Ok(iter) => Box::pin(iter).try_take_while(|obj| {
+                                future::ready(Ok(obj.last_reported <= start_ts))
+                            }),
+                            Err(err) => {
+                                error!("Dump failed for station {station_id}: {err}");
+
+                                if sender.send(Err(err.into())).await.is_err() {
+                                    return;
+                                };
+
+                                return;
+                            }
+                        };
+
+                        while let Some(obj) = iter.next().await {
+                            let obj = obj.map_err(|err| err.into());
+
+                            if sender.send(obj).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                })
+                .boxed()
+                .buffer_unordered(CONCURENT_JOURNAL_DUMPS)
+                .count()
+                .await;
+        });
+
+        ReceiverStream::new(receiver)
+    }
+
+    // Update daemons
 
     async fn update_stations_info(self: Arc<Self>) {
         let start_instant = Instant::now();
@@ -161,7 +270,7 @@ impl State {
                     }
                 }
             })
-            .buffered(CONCURENT_JOURNAL_WRITES)
+            .buffer_unordered(CONCURENT_JOURNAL_WRITES)
             .count()
             .await;
 
@@ -185,6 +294,53 @@ impl State {
             "Updated stations status",
         );
     }
+
+    fn spawn_update_dumps_daemon(self: Arc<Self>, dump_frequency: chrono::Duration) {
+        tokio::spawn(async move {
+            loop {
+                let latest = match self.dumps_registry.latest().await {
+                    Ok(x) => x,
+                    Err(err) => {
+                        error!("Could not read last dump date: {err}");
+                        return;
+                    }
+                };
+
+                if let Some((latest_data, _)) = latest {
+                    let now = Utc::now();
+                    let elapsed = latest_data - Utc::now();
+
+                    if elapsed < dump_frequency {
+                        let wait_duration = match (dump_frequency - elapsed).to_std() {
+                            Ok(x) => x,
+                            Err(err) => {
+                                error!("Could not compute next dump date, dumps disable: {err}");
+                                return;
+                            }
+                        };
+
+                        info!(
+                            "Next dump schedule at {:.0}",
+                            (now + dump_frequency - elapsed).with_timezone(&Local),
+                        );
+
+                        tokio::time::sleep(wait_duration).await;
+                        info!("Starting schedule dump");
+                    } else {
+                        info!("Starting new dump: last ages to {latest_data}: ");
+                    }
+                } else {
+                    info!("Starting initial dump");
+                }
+
+                let dump_stream = self.clone().dump().await;
+
+                if let Err(err) = self.dumps_registry.dump(dump_stream).await {
+                    error!("Dump failed: {err}");
+                }
+            }
+        });
+    }
 }
 
 fn spawn_update_daemon<T, F>(
@@ -202,8 +358,8 @@ where
         timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
-            timer.tick().await;
             update_task(state.clone()).await;
+            timer.tick().await;
         }
     })
 }

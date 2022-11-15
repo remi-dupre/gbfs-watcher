@@ -25,6 +25,5 @@ RUN --mount=type=cache,target=/srv/target \
 # ---
 
 FROM alpine:3
-ENV RUST_LOG "info"
 COPY --from=builder /srv/server /srv/server
 ENTRYPOINT ["/srv/server"]

@@ -19,6 +19,10 @@ pub struct Args {
     #[clap(short, long)]
     journals_dir: PathBuf,
 
+    /// Directory where dumps are written
+    #[clap(short, long)]
+    dumps_dir: PathBuf,
+
     /// Port the API will listen to
     #[clap(short, long, default_value = "9000")]
     port: u16,
@@ -31,7 +35,13 @@ pub struct Args {
 #[tokio::main]
 async fn main() {
     let filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(tracing_subscriber::filter::LevelFilter::DEBUG.into())
+        .with_default_directive({
+            if cfg!(debug_assertions) {
+                tracing_subscriber::filter::LevelFilter::DEBUG.into()
+            } else {
+                tracing_subscriber::filter::LevelFilter::INFO.into()
+            }
+        })
         .from_env()
         .expect("could not build filter");
 
@@ -50,7 +60,7 @@ async fn main() {
         .expect("could not subscribe to signals");
 
     tokio::spawn(async move {
-        let state = State::new(&args.watched_url, args.journals_dir)
+        let state = State::new(&args.watched_url, args.journals_dir, args.dumps_dir)
             .await
             .expect("failed to init state");
 
