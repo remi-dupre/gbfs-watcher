@@ -2,8 +2,14 @@
 name = "gbfs-watcher"
 version = "0.1.0"
 authors = ["Rémi Dupré <remi@dupre.io>"]
-description = "API and logger for GBFS endpoints"
 edition = "2021"
+description = "API and logger for GBFS endpoints, noticeably Velib' in Paris"
+readme = "README.md"
+homepage = "https://velib-history-api.dupre.io"
+repository = "https://github.com/remi-dupre/gbfs-watcher"
+license = "GPL-3.0"
+keywords = ["api", "axum", "bike"]
+categories = ["web-programming::http-server"]
 
 [dependencies]
 async-compression = { version = "0.3", features = ["gzip", "tokio"] }

@@ -1,3 +1,19 @@
+// gbfs-watcher: API and logger for GBFS endpoints
+// Copyright (C) 2022  Rémi Dupré
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 use std::io::{Cursor, Write};
 
 use crate::gbfs::models;
@@ -112,5 +128,32 @@ impl Binary<STATION_STATUS_BIN_SIZE> for models::StationStatus {
                 ebike: num_bikes_available_ebike,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn bin_station_status_reflexive() {
+        let status = models::StationStatus {
+            station_id: 121314,
+            num_bikes_available: 12,
+            num_docks_available: 7,
+            num_docks_disabled: 3,
+            is_installed: true,
+            is_returning: false,
+            is_renting: false,
+            last_reported: 329032903,
+            num_bikes_available_types: models::BikesAvailablePerType {
+                mechanical: 7,
+                ebike: 5,
+            },
+        };
+
+        let status_as_bin = status.serialize();
+        let status_deserialized = models::StationStatus::deserialize(&status_as_bin);
+        assert_eq!(status, status_deserialized);
     }
 }
