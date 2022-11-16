@@ -1,6 +1,6 @@
 [package]
 name = "gbfs-watcher"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["Rémi Dupré <remi@dupre.io>"]
 edition = "2021"
 description = "API and logger for GBFS endpoints, noticeably Velib' in Paris"
