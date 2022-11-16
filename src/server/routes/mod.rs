@@ -17,13 +17,66 @@
 pub mod dump;
 pub mod stations;
 
-use axum::body::Body;
+use std::convert::Infallible;
+use std::sync::Arc;
+
+use axum::body::{Body, HttpBody};
 use axum::http::Request;
+use axum::response::Response;
+use axum::Router;
+use serde::Serialize;
+use tower::Service;
 
 use super::error::Error;
 
-pub async fn handle_unmatched_path(request: Request<Body>) -> Error {
+#[derive(Debug, Serialize)]
+pub struct RouteDoc {
+    pub url: &'static str,
+    pub description: &'static str,
+}
+
+pub struct DocumentationBuilder<B> {
+    endpoints: Vec<RouteDoc>,
+    router: Router<B>,
+}
+
+impl<B: HttpBody + Send + 'static> DocumentationBuilder<B> {
+    pub fn route<T>(self, url: &'static str, description: &'static str, handler: T) -> Self
+    where
+        T: Service<Request<B>, Response = Response, Error = Infallible> + Clone + Send + 'static,
+        T::Future: Send + 'static,
+    {
+        let Self {
+            mut endpoints,
+            router,
+        } = self;
+
+        endpoints.push(RouteDoc { url, description });
+        let router = router.route(url, handler);
+        Self { endpoints, router }
+    }
+
+    pub fn into_parts(self) -> (Router<B>, Arc<Vec<RouteDoc>>) {
+        (self.router, Arc::new(self.endpoints))
+    }
+}
+
+impl<B: HttpBody + Send + 'static> Default for DocumentationBuilder<B> {
+    fn default() -> Self {
+        Self {
+            endpoints: Vec::new(),
+            router: Router::new(),
+        }
+    }
+}
+
+pub async fn handle_unmatched_path(routes: Arc<Vec<RouteDoc>>, request: Request<Body>) -> Error {
     let uri = request.uri().clone();
     let method = request.method().clone();
-    Error::UnmatchedPath { uri, method }
+
+    Error::UnmatchedPath {
+        uri,
+        method,
+        routes,
+    }
 }

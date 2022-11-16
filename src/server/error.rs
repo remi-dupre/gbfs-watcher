@@ -15,6 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::http::{StatusCode, Uri};
@@ -27,6 +28,8 @@ use thiserror::Error as ThisError;
 use crate::gbfs::models;
 use crate::storage::{dump, journal};
 use crate::util::serialize_with_display;
+
+use super::routes::RouteDoc;
 
 #[derive(Debug, Serialize, ThisError)]
 #[serde(rename_all = "snake_case", tag = "type")]
@@ -57,6 +60,7 @@ pub enum Error {
         method: Method,
         #[serde(serialize_with = "serialize_with_display")]
         uri: Uri,
+        routes: Arc<Vec<RouteDoc>>,
     },
 
     #[error("journal error")]
