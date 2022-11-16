@@ -14,12 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::StreamBody;
+use axum::extract::rejection::PathRejection;
+use axum::extract::Path;
 use axum::http::header;
 use axum::response::IntoResponse;
+use axum::Json;
 use chrono::{DateTime, Utc};
+use futures::{future, StreamExt, TryStreamExt};
+use serde::Serialize;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
@@ -30,10 +36,59 @@ use crate::storage::dump;
 /// Size of the buffer used to stream files
 const DUMP_READ_BUFF_SIZE: usize = 16 * 1024 * 1024; // 16 MB
 
-pub async fn latest_dump(state: Arc<State>) -> Result<impl IntoResponse, Error> {
-    let (date, path): (DateTime<Utc>, _) =
-        state.dumps_registry.latest().await?.ok_or(Error::NoDump)?;
+#[derive(Serialize)]
+pub struct DumpInfo {
+    name: String,
+    date: i64,
+    size: u64,
+}
 
+pub async fn list_dumps(state: Arc<State>) -> Result<Json<Vec<DumpInfo>>, Error> {
+    let mut infos: Vec<_> = (state.dumps_registry.iter().await?)
+        .try_filter_map(|(date, path)| async move {
+            let name = {
+                let Some(name) = path.file_name() else { return Ok(None) };
+                name.to_string_lossy().to_string()
+            };
+
+            let date = date.timestamp();
+            let meta = tokio::fs::metadata(&path).await?;
+            let size = meta.len();
+            let info = DumpInfo { name, date, size };
+            Ok(Some(info))
+        })
+        .try_collect()
+        .await?;
+
+    infos.sort_unstable_by_key(|info| info.date);
+    Ok(Json(infos))
+}
+
+pub async fn dump_by_name(
+    state: Arc<State>,
+    name: Result<Path<String>, PathRejection>,
+) -> Result<impl IntoResponse, Error> {
+    let Path(name) = name?;
+
+    let (date, path) = (state.dumps_registry.iter().await?)
+        .try_filter(|(_, path)| {
+            let res = Some(name.as_str()) == path.file_name().and_then(|name| name.to_str());
+            future::ready(res)
+        })
+        .boxed()
+        .try_next()
+        .await?
+        .ok_or_else(|| Error::NoDumpWithName { name: name.clone() })?;
+
+    serve_dump(date, path).await
+}
+
+pub async fn latest_dump(state: Arc<State>) -> Result<impl IntoResponse, Error> {
+    let (date, path) = state.dumps_registry.latest().await?.ok_or(Error::NoDump)?;
+    serve_dump(date, path).await
+}
+
+async fn serve_dump(date: DateTime<Utc>, path: PathBuf) -> Result<impl IntoResponse, Error> {
     let file = File::open(&path).await.map_err(dump::Error::from)?;
     let meta = file.metadata().await.map_err(dump::Error::from)?;
 

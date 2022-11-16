@@ -85,9 +85,10 @@ impl State {
         api_root_url: &str,
         journals_path: PathBuf,
         dumps_path: PathBuf,
+        keep_dumps: usize,
     ) -> Result<Arc<Self>, Error> {
         let journals_lock = DirLock::lock(journals_path).await?;
-        let dumps_registry = DumpRegistry::new(dumps_path).await?;
+        let dumps_registry = DumpRegistry::new(dumps_path, keep_dumps).await?;
         let api = GbfsApi::new(api_root_url).await?;
         let stations_status = AllStationsStatusJournal::default();
 

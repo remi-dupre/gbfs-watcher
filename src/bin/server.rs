@@ -28,9 +28,22 @@ use gbfs_watcher::server::state::State;
 const VELIB_API_URL: &str =
     "https://velib-metropole-opendata.smoove.pro/opendata/Velib_Metropole/gbfs.json";
 
-#[derive(Debug, Parser, Serialize)]
-#[command(author, version, about)]
+/// gbfs-watcher  Copyright (C) 2022  Rémi Dupré <remi@dupre.io>
+/// API and logger for GBFS endpoints, noticeably Velib' in Paris
+///
+/// This program comes with ABSOLUTELY NO WARRANTY'. This is free software, and
+/// you are welcome to redistribute it under certain conditions.
+#[derive(Parser, Serialize)]
+#[command(author, version, about, verbatim_doc_comment)]
 pub struct Args {
+    /// Url to GBFS endpoint of the watched API
+    #[clap(short, long, default_value = VELIB_API_URL)]
+    watched_url: String,
+
+    /// Port the API will listen to
+    #[clap(short, long, default_value = "9000")]
+    port: u16,
+
     /// Directory where journal data is stored
     #[clap(short, long)]
     journals_dir: PathBuf,
@@ -39,18 +52,14 @@ pub struct Args {
     #[clap(short, long)]
     dumps_dir: PathBuf,
 
-    /// Port the API will listen to
-    #[clap(short, long, default_value = "9000")]
-    port: u16,
-
-    /// Url to GBFS endpoint of the watched API
-    #[clap(short, long, default_value = VELIB_API_URL)]
-    watched_url: String,
+    /// Max number of dumps kept on disk, 0 for no limit
+    #[clap(short, long, default_value = "3")]
+    keep_dumps: usize,
 }
 
 #[tokio::main]
 async fn main() {
-    let filter = tracing_subscriber::EnvFilter::builder()
+    let tracing_filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive({
             if cfg!(debug_assertions) {
                 tracing_subscriber::filter::LevelFilter::DEBUG.into()
@@ -61,12 +70,13 @@ async fn main() {
         .from_env()
         .expect("could not build filter");
 
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+    let tracing_subscriber = tracing_subscriber::FmtSubscriber::builder()
         .with_target(false)
-        .with_env_filter(filter)
+        .with_env_filter(tracing_filter)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber).expect("setting global subscriber failed");
+    tracing::subscriber::set_global_default(tracing_subscriber)
+        .expect("setting global subscriber failed");
 
     let args = Args::parse();
     let display_args = serde_json::to_string_pretty(&args).expect("could not display args");
@@ -76,11 +86,18 @@ async fn main() {
         .expect("could not subscribe to signals");
 
     tokio::spawn(async move {
-        let state = State::new(&args.watched_url, args.journals_dir, args.dumps_dir)
+        let state = {
+            State::new(
+                &args.watched_url,
+                args.journals_dir,
+                args.dumps_dir,
+                args.keep_dumps,
+            )
             .await
-            .expect("failed to init state");
+            .expect("failed to init state")
+        };
 
-        tokio::spawn(run_app(state, args.port));
+        run_app(state, args.port).await;
     });
 
     if let Some(signal) = signals.next().await {

@@ -14,7 +14,7 @@ categories = ["web-programming::http-server"]
 [dependencies]
 async-compression = { version = "0.3", features = ["gzip", "tokio"] }
 axum = { version = "0.5", default-features = false, features = ["json", "headers", "http1", "http2", "query"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive"] }
 futures = { version = "0.3", default-features = false }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }

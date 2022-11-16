@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use async_compression::tokio::write::GzipEncoder;
 use chrono::{DateTime, Utc};
-use futures::{future, Stream, StreamExt, TryStreamExt};
+use futures::{future, stream, Stream, StreamExt, TryStreamExt};
 use serde::Serialize;
 use tempdir::TempDir;
 use thiserror::Error as ThisError;
@@ -50,12 +50,13 @@ pub enum Error {
 
 pub struct DumpRegistry {
     path: DirLock,
+    kept: usize,
 }
 
 impl DumpRegistry {
-    pub async fn new(path: PathBuf) -> Result<Self, Error> {
+    pub async fn new(path: PathBuf, kept: usize) -> Result<Self, Error> {
         let path = DirLock::lock(path).await?;
-        Ok(Self { path })
+        Ok(Self { path, kept })
     }
 
     pub async fn dump<E, O, S>(&self, mut stream: S) -> Result<(), Error>
@@ -133,6 +134,7 @@ impl DumpRegistry {
             "Dump finished"
         );
 
+        self.cleanup_old_dumps().await?;
         Ok(())
     }
 
@@ -171,5 +173,24 @@ impl DumpRegistry {
             });
 
         Ok(stream)
+    }
+
+    async fn cleanup_old_dumps(&self) -> Result<usize, Error> {
+        if self.kept == 0 {
+            return Ok(0);
+        }
+
+        let mut dumps: Vec<_> = self.iter().await?.try_collect().await?;
+        dumps.sort_unstable_by_key(|(date, _)| *date);
+        let count_removed = dumps.len().saturating_sub(self.kept);
+
+        stream::iter(dumps)
+            .take(count_removed)
+            .inspect(|(_, path)| info!("Removing dump at {}", path.display()))
+            .map(Ok)
+            .try_for_each(|(_, path)| tokio::fs::remove_file(path))
+            .await?;
+
+        Ok(count_removed)
     }
 }

@@ -68,6 +68,9 @@ pub enum Error {
     #[error("no dump available on the server")]
     NoDump,
 
+    #[error("no dump with name {name}")]
+    NoDumpWithName { name: String },
+
     #[error("error while fetching dump")]
     DumpError {
         #[from]
@@ -81,9 +84,12 @@ impl IntoResponse for Error {
             Self::AnswerTooLarge
             | Self::InvalidQueryParameter { .. }
             | Self::InvalidPathParameter { .. } => StatusCode::BAD_REQUEST,
-            Self::UnknownStation { .. } | Self::NoDump | Self::UnmatchedPath { .. } => {
-                StatusCode::NOT_FOUND
-            }
+
+            Self::UnknownStation { .. }
+            | Self::NoDump
+            | Self::UnmatchedPath { .. }
+            | Error::NoDumpWithName { .. } => StatusCode::NOT_FOUND,
+
             Self::Journal { .. } | Self::DumpError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

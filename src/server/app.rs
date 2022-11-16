@@ -29,35 +29,55 @@ use super::routes;
 use super::state::State;
 
 pub async fn run_app(state: Arc<State>, port: u16) {
-    let app = Router::new()
+    let stations_router = Router::new()
         .route(
-            "/stations",
+            "/",
             get({
                 let state = state.clone();
                 move || routes::stations::get_stations(state)
             }),
         )
         .route(
-            "/stations/:id",
+            "/:id",
             get({
                 let state = state.clone();
                 move |id| routes::stations::get_station_detail(state, id)
             }),
         )
         .route(
-            "/stations/:id/history",
+            "/:id/history",
             get({
                 let state = state.clone();
                 move |id, params| routes::stations::get_station_history(state, id, params)
             }),
+        );
+
+    let dumps_router = Router::new()
+        .route(
+            "/",
+            get({
+                let state = state.clone();
+                move || routes::dump::list_dumps(state)
+            }),
         )
         .route(
-            "/dump/latest",
+            "/:name",
+            get({
+                let state = state.clone();
+                move |name| routes::dump::dump_by_name(state, name)
+            }),
+        )
+        .route(
+            "/latest",
             get({
                 let state = state.clone();
                 move || routes::dump::latest_dump(state)
             }),
-        )
+        );
+
+    let app = Router::new()
+        .nest("/stations", stations_router)
+        .nest("/dumps", dumps_router)
         .fallback(handle_unmatched_path.into_service())
         .layer(
             CompressionLayer::new().compress_when(
