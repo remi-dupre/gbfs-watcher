@@ -1,3 +1,4 @@
+pub mod dump;
 pub mod stations;
 
 use axum::body::Body;

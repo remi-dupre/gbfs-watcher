@@ -9,7 +9,7 @@ use serde::Serialize;
 use thiserror::Error as ThisError;
 
 use crate::gbfs::models;
-use crate::storage::journal;
+use crate::storage::{dump, journal};
 use crate::util::serialize_with_display;
 
 #[derive(Debug, Serialize, ThisError)]
@@ -48,16 +48,27 @@ pub enum Error {
         #[from]
         source: journal::StationStatusJournalError,
     },
+
+    #[error("no dump available on the server")]
+    NoDump,
+
+    #[error("error while fetching dump")]
+    DumpError {
+        #[from]
+        source: dump::Error,
+    },
 }
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let status = match &self {
-            Self::UnknownStation { .. } | Self::UnmatchedPath { .. } => StatusCode::NOT_FOUND,
-            Self::Journal { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             Self::AnswerTooLarge
             | Self::InvalidQueryParameter { .. }
             | Self::InvalidPathParameter { .. } => StatusCode::BAD_REQUEST,
+            Self::UnknownStation { .. } | Self::NoDump | Self::UnmatchedPath { .. } => {
+                StatusCode::NOT_FOUND
+            }
+            Self::Journal { .. } | Self::DumpError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
 
         #[derive(Serialize)]

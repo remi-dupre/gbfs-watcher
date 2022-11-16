@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 use chrono::offset::{Local, Utc};
 use futures::{future, stream, Future, Stream, StreamExt, TryStreamExt};
 use thiserror::Error as ThisError;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::MissedTickBehavior;
 use tokio_stream::wrappers::ReceiverStream;
@@ -21,10 +20,11 @@ use crate::storage::dump::{self, DumpRegistry};
 use crate::storage::journal::{StationStatusJournal, StationStatusJournalError};
 
 /// Size of the buffer while performing dumps (in number of journal entries)
-const DUMP_CACHE_SIZE: usize = 10 * 1024;
+const DUMP_CACHE_SIZE: usize = 1024;
 
-/// Concurent journals that are being dumped at the same time
-const CONCURENT_JOURNAL_DUMPS: usize = 32;
+/// Concurent journals that are being dumped at the same time, note that dumps won't block status
+/// updates as long as this value is lower than `CONCURENT_JOURNAL_WRITES`
+const CONCURENT_JOURNAL_DUMPS: usize = 4;
 
 /// Number of concurent insertions that will be performed on updates
 const CONCURENT_JOURNAL_WRITES: usize = 128;
@@ -36,7 +36,7 @@ const UPDATE_STATIONS_STATUS_FREQUENCY: Duration = Duration::from_secs(2 * 60); 
 const UPDATE_STATIONS_INFO_FREQUENCY: Duration = Duration::from_secs(60 * 60); // 1h
 
 /// Dump frequency, in seconds
-const DUMP_FREQUENCY: i64 = 6 * 60 * 60; // 12h
+const DUMP_FREQUENCY: i64 = 12 * 60 * 60; // 12h
 
 pub type AllStationsStatusJournal =
     RwLock<HashMap<models::StationId, RwLock<StationStatusJournal>>>;
@@ -59,7 +59,7 @@ pub enum Error {
 pub struct State {
     journals_lock: DirLock,
     api: GbfsApi,
-    dumps_registry: DumpRegistry,
+    pub dumps_registry: DumpRegistry,
     pub stations_info: RwLock<Arc<HashMap<models::StationId, Arc<models::StationInformation>>>>,
     pub stations_status: AllStationsStatusJournal,
 }
@@ -91,6 +91,7 @@ impl State {
             stations_status,
         });
 
+        // Ensure journals are loaded
         state.clone().update_stations_status().await;
 
         spawn_update_daemon(
@@ -108,22 +109,6 @@ impl State {
         state
             .clone()
             .spawn_update_dumps_daemon(chrono::Duration::seconds(DUMP_FREQUENCY));
-
-        let mut dump_file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open("/tmp/dump_test.jsonl")
-            .await
-            .unwrap();
-
-        let mut dump = Box::pin(state.clone().dump().await);
-
-        while let Some(status) = dump.next().await {
-            let mut json = serde_json::to_string(&status.unwrap()).unwrap();
-            json.push('\n');
-            dump_file.write_all(json.as_bytes()).await.unwrap();
-        }
 
         Ok(state)
     }
@@ -144,14 +129,6 @@ impl State {
                     let sender = sender.clone();
 
                     async move {
-                        let sender = &sender;
-
-                        // let send = |val| async move {
-                        //     if let Err(err) = sender.send(val).await {
-                        //         warn!("Dump aborted for station {station_id}: {err}");
-                        //     }
-                        // };
-
                         let journal = journal.read().await;
 
                         let mut iter = match journal.iter().await {
@@ -306,12 +283,12 @@ impl State {
                     }
                 };
 
-                if let Some((latest_data, _)) = latest {
+                if let Some((latest_date, _)) = latest {
+                    let next_date = latest_date + dump_frequency;
                     let now = Utc::now();
-                    let elapsed = latest_data - Utc::now();
 
-                    if elapsed < dump_frequency {
-                        let wait_duration = match (dump_frequency - elapsed).to_std() {
+                    if now < next_date {
+                        let wait_duration = match (next_date - now).to_std() {
                             Ok(x) => x,
                             Err(err) => {
                                 error!("Could not compute next dump date, dumps disable: {err}");
@@ -319,15 +296,11 @@ impl State {
                             }
                         };
 
-                        info!(
-                            "Next dump schedule at {:.0}",
-                            (now + dump_frequency - elapsed).with_timezone(&Local),
-                        );
-
+                        info!("Next dump scheduled on {}", next_date.with_timezone(&Local));
                         tokio::time::sleep(wait_duration).await;
-                        info!("Starting schedule dump");
+                        info!("Starting scheduled dump");
                     } else {
-                        info!("Starting new dump: last ages to {latest_data}: ");
+                        info!("Starting new dump: last ages to {latest_date}: ");
                     }
                 } else {
                     info!("Starting initial dump");
@@ -356,10 +329,11 @@ where
         let state = state.clone();
         let mut timer = tokio::time::interval(delay);
         timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        timer.reset();
 
         loop {
-            update_task(state.clone()).await;
             timer.tick().await;
+            update_task(state.clone()).await;
         }
     })
 }

@@ -1,10 +1,13 @@
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
 use thiserror::Error as ThisError;
 use tokio::fs::OpenOptions;
 
-#[derive(Debug, ThisError)]
+use crate::util::serialize_with_display;
+
+#[derive(Debug, Serialize, ThisError)]
 pub enum Error {
     #[error("directory is already locked by {}", lock_path.display())]
     AlreadyLocked { lock_path: PathBuf },
@@ -12,6 +15,8 @@ pub enum Error {
     #[error("could not create lock in {}: {source}", lock_path.display())]
     IO {
         lock_path: PathBuf,
+
+        #[serde(serialize_with = "serialize_with_display")]
         source: std::io::Error,
     },
 }

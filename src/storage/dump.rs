@@ -14,17 +14,22 @@ use tokio_stream::wrappers::ReadDirStream;
 use tracing::{error, info};
 
 use super::dir_lock::DirLock;
+use crate::util::serialize_with_display;
 
 /// Size of the file buffer while writing dumps
 const DUMP_BUF_SIZE: usize = 16 * 1024 * 1024; // 16 MB
 
-#[derive(Debug, ThisError)]
+#[derive(Debug, Serialize, ThisError)]
 pub enum Error {
     #[error("dump registry is already locked: {0}")]
     AlreadyLocked(#[from] super::dir_lock::Error),
 
     #[error("I/O error: {0}")]
-    IO(#[from] std::io::Error),
+    IO(
+        #[from]
+        #[serde(serialize_with = "serialize_with_display")]
+        std::io::Error,
+    ),
 }
 
 pub struct DumpRegistry {
@@ -44,7 +49,7 @@ impl DumpRegistry {
         S: Stream<Item = Result<O, E>> + Unpin,
     {
         let start_instant = Instant::now();
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let filename = format!("dump_{now}.jsonl.gz");
         let tmp_dir = TempDir::new_in(&*self.path, "dump_part")?;
         let tmp_path = tmp_dir.path().join(&filename);
