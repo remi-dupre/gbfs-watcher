@@ -1,6 +1,5 @@
+name: Test
 on: [push]
-
-name: CI
 
 jobs:
   build_and_test:

@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use futures::stream::StreamExt;
+use futures::StreamExt;
 use tokio::fs::File;
 
 use gbfs_watcher::gbfs::models;

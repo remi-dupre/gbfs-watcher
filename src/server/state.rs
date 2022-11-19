@@ -87,29 +87,18 @@ impl State {
         dumps_path: PathBuf,
         keep_dumps: usize,
     ) -> Result<Arc<Self>, Error> {
-        let journals_lock = DirLock::lock(journals_path).await?;
-        let dumps_registry = DumpRegistry::new(dumps_path, keep_dumps).await?;
-        let api = GbfsApi::new(api_root_url).await?;
-        let stations_status = AllStationsStatusJournal::default();
-
-        let stations_info = RwLock::new(Arc::new(
-            api.get_station_information()
-                .await?
-                .into_iter()
-                .map(|info| (info.station_id, Arc::new(info)))
-                .collect(),
-        ));
-
         let state = Arc::new(Self {
-            journals_lock,
-            api,
-            dumps_registry,
-            stations_info,
-            stations_status,
+            journals_lock: DirLock::lock(journals_path).await?,
+            api: GbfsApi::new(api_root_url).await?,
+            dumps_registry: DumpRegistry::new(dumps_path, keep_dumps).await?,
+            stations_info: Default::default(),
+            stations_status: Default::default(),
         });
 
-        // Ensure journals are loaded
-        state.clone().update_stations_status().await;
+        tokio::join!(
+            state.clone().update_stations_info(),
+            state.clone().update_stations_status(),
+        );
 
         spawn_update_daemon(
             Self::update_stations_status,

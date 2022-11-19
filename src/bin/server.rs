@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use futures::stream::StreamExt;
+use futures::StreamExt;
 use serde::Serialize;
 use signal_hook_tokio::Signals;
 use tracing::{info, warn};

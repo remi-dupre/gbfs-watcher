@@ -19,8 +19,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
-use futures::stream::{self, Stream, StreamExt, TryStreamExt};
-use futures::{future, Future};
+use futures::{future, stream, Future, Stream, StreamExt, TryStreamExt};
 use serde::Serialize;
 use thiserror::Error as ThisError;
 use tokio::fs::{File, OpenOptions};
