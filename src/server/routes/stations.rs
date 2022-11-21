@@ -20,17 +20,28 @@ use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::{Path, Query};
 use axum::Json;
 use futures::{future, stream, StreamExt, TryStreamExt};
+use geoutils::Location;
 use serde::{Deserialize, Serialize};
 
 use super::Error;
 use crate::gbfs::models;
 use crate::server::state::State;
 
+const NUM_NEARBY: usize = 10;
+
+#[derive(Serialize)]
+pub struct StationNearby {
+    pub distance: f64,
+    pub station: StationDetail,
+}
+
 #[derive(Serialize)]
 pub struct StationDetail {
     pub journal_size: usize,
     pub info: Arc<models::StationInformation>,
     pub current_status: Option<models::StationStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nearby: Vec<StationNearby>,
 }
 
 #[derive(Serialize)]
@@ -74,6 +85,7 @@ pub async fn get_stations<'a>(state: Arc<State>) -> Json<Stations> {
                     journal_size,
                     info: info.clone(),
                     current_status,
+                    nearby: Vec::new(),
                 },
             ))
         })
@@ -89,11 +101,9 @@ pub async fn get_station_detail(
     id: Result<Path<u64>, PathRejection>,
 ) -> Result<Json<StationDetail>, Error> {
     let Path(id) = id?;
+    let stations_info = state.stations_info.read().await.clone();
 
-    let info = state
-        .stations_info
-        .read()
-        .await
+    let info = stations_info
         .get(&id)
         .ok_or(Error::UnknownStation { station_id: id })?
         .clone();
@@ -107,10 +117,48 @@ pub async fn get_station_detail(
         }
     };
 
+    let station_loc = Location::new(info.lat, info.lon);
+    let by_dist = state.stations_by_dist.read().await.clone();
+
+    let nearby: Vec<_> = stream::iter(by_dist.get(&info.station_id).into_iter().flatten())
+        .filter_map(|other| {
+            let id = other.station_id;
+            let state = state.clone();
+            let stations_info = stations_info.clone();
+
+            async move {
+                let info = stations_info.get(&id)?.clone();
+                let other_loc = Location::new(other.lat, other.lon);
+                let distance = station_loc.distance_to(&other_loc).ok()?.meters();
+
+                let (current_status, journal_size) = {
+                    if let Some(journal) = state.stations_status.read().await.get(&id) {
+                        let journal = journal.read().await;
+                        (journal.last().copied(), journal.len())
+                    } else {
+                        (None, 0)
+                    }
+                };
+
+                let station = StationDetail {
+                    journal_size,
+                    info,
+                    current_status,
+                    nearby: Vec::new(),
+                };
+
+                Some(StationNearby { distance, station })
+            }
+        })
+        .take(NUM_NEARBY)
+        .collect()
+        .await;
+
     let resp = StationDetail {
         journal_size,
         info,
         current_status,
+        nearby,
     };
 
     Ok(Json(resp))

@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use chrono::offset::{Local, Utc};
 use futures::{future, stream, Future, Stream, StreamExt, TryStreamExt};
+use geoutils::Location;
 use thiserror::Error as ThisError;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::MissedTickBehavior;
@@ -77,6 +78,8 @@ pub struct State {
     api: GbfsApi,
     pub dumps_registry: DumpRegistry,
     pub stations_info: RwLock<Arc<HashMap<models::StationId, Arc<models::StationInformation>>>>,
+    pub stations_by_dist:
+        RwLock<Arc<HashMap<models::StationId, Vec<Arc<models::StationInformation>>>>>,
     pub stations_status: AllStationsStatusJournal,
 }
 
@@ -92,6 +95,7 @@ impl State {
             api: GbfsApi::new(api_root_url).await?,
             dumps_registry: DumpRegistry::new(dumps_path, keep_dumps).await?,
             stations_info: Default::default(),
+            stations_by_dist: Default::default(),
             stations_status: Default::default(),
         });
 
@@ -187,7 +191,9 @@ impl State {
         };
 
         let stations_count = stations_info.len();
+        let stations_by_dist = build_stations_by_dist(&stations_info);
         *self.stations_info.write().await = Arc::new(stations_info);
+        *self.stations_by_dist.write().await = Arc::new(stations_by_dist);
         let total_time = start_instant.elapsed();
 
         info!(
@@ -342,4 +348,30 @@ where
             update_task(state.clone()).await;
         }
     })
+}
+
+fn build_stations_by_dist(
+    stations: &HashMap<models::StationId, Arc<models::StationInformation>>,
+) -> HashMap<models::StationId, Vec<Arc<models::StationInformation>>> {
+    stations
+        .values()
+        .map(|from| {
+            let from_pos = Location::new(from.lat, from.lon);
+
+            let mut by_dist: Vec<_> = (stations.values())
+                .filter(|to| to.station_id != from.station_id)
+                .filter_map(|to| {
+                    let to_pos = Location::new(to.lat, to.lon);
+                    Some((from_pos.distance_to(&to_pos).ok()?.meters(), to.clone()))
+                })
+                .collect();
+
+            by_dist.sort_unstable_by(|(x, _), (y, _)| x.total_cmp(y));
+
+            (
+                from.station_id,
+                by_dist.into_iter().map(|(_, x)| x).collect(),
+            )
+        })
+        .collect()
 }
