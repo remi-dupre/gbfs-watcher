@@ -115,7 +115,7 @@ pub struct StationInformationData {
     pub stations: Vec<StationInformation>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct StationInformation {
     /// Identifier of a station.
     pub station_id: StationId,

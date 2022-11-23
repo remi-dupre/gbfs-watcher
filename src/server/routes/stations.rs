@@ -20,7 +20,6 @@ use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::{Path, Query};
 use axum::Json;
 use futures::{future, stream, StreamExt, TryStreamExt};
-use geoutils::Location;
 use serde::{Deserialize, Serialize};
 
 use super::Error;
@@ -65,8 +64,8 @@ pub struct StationHistory {
 }
 
 pub async fn get_stations<'a>(state: Arc<State>) -> Json<Stations> {
-    let stations = state.stations_info.read().await.clone();
-    let stations_status = &state.stations_status.read().await;
+    let stations = state.stations.infos.read().await.clone();
+    let stations_status = &state.stations.journals.read().await;
 
     let stations = stream::iter(stations.iter())
         .filter_map(|(station_id, info)| async move {
@@ -101,7 +100,7 @@ pub async fn get_station_detail(
     id: Result<Path<u64>, PathRejection>,
 ) -> Result<Json<StationDetail>, Error> {
     let Path(id) = id?;
-    let stations_info = state.stations_info.read().await.clone();
+    let stations_info = state.stations.infos.read().await.clone();
 
     let info = stations_info
         .get(&id)
@@ -109,7 +108,7 @@ pub async fn get_station_detail(
         .clone();
 
     let (current_status, journal_size) = {
-        if let Some(journal) = state.stations_status.read().await.get(&id) {
+        if let Some(journal) = state.stations.journals.read().await.get(&id) {
             let journal = journal.read().await;
             (journal.last().copied(), journal.len())
         } else {
@@ -117,22 +116,19 @@ pub async fn get_station_detail(
         }
     };
 
-    let station_loc = Location::new(info.lat, info.lon);
-    let by_dist = state.stations_by_dist.read().await.clone();
+    let by_dist = state.stations.by_dist.read().await.clone();
 
     let nearby: Vec<_> = stream::iter(by_dist.get(&info.station_id).into_iter().flatten())
         .filter_map(|other| {
-            let id = other.station_id;
+            let id = other.station.station_id;
             let state = state.clone();
             let stations_info = stations_info.clone();
 
             async move {
                 let info = stations_info.get(&id)?.clone();
-                let other_loc = Location::new(other.lat, other.lon);
-                let distance = station_loc.distance_to(&other_loc).ok()?.meters();
 
                 let (current_status, journal_size) = {
-                    if let Some(journal) = state.stations_status.read().await.get(&id) {
+                    if let Some(journal) = state.stations.journals.read().await.get(&id) {
                         let journal = journal.read().await;
                         (journal.last().copied(), journal.len())
                     } else {
@@ -147,7 +143,10 @@ pub async fn get_station_detail(
                     nearby: Vec::new(),
                 };
 
-                Some(StationNearby { distance, station })
+                Some(StationNearby {
+                    distance: other.dist,
+                    station,
+                })
             }
         })
         .take(NUM_NEARBY)
@@ -172,7 +171,7 @@ pub async fn get_station_history(
     let Path(id) = id?;
     let params = params?;
     let detail = get_station_detail(state.clone(), Ok(Path(id))).await?.0;
-    let station_status = state.stations_status.read().await;
+    let station_status = state.stations.journals.read().await;
 
     let journal = station_status
         .get(&id)

@@ -24,3 +24,25 @@ where
 {
     serializer.serialize_str(&format!("{x}"))
 }
+
+/// Return None if input is zero, useful to skip zero values in tracing.
+pub fn non_zero<T: Copy + TryInto<i8>>(x: T) -> Option<T> {
+    if matches!(x.try_into(), Ok(0)) {
+        None
+    } else {
+        Some(x)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn call_non_zero() {
+        assert_eq!(non_zero(0u32), None);
+        assert_eq!(non_zero(1u32), Some(1));
+        assert_eq!(non_zero(0isize), None);
+        assert_eq!(non_zero(-534isize), Some(-534));
+    }
+}
