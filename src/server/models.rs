@@ -14,8 +14,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-pub mod app;
-pub mod error;
-pub mod models;
-pub mod routes;
-pub mod state;
+use std::sync::Arc;
+
+use serde::Serialize;
+
+use crate::gbfs::models as gbfs;
+
+#[derive(Serialize)]
+pub struct WithDist<T> {
+    pub dist: f64,
+    pub station: T,
+}
+
+#[derive(Serialize)]
+pub struct StationDetail {
+    pub journal_size: usize,
+    pub info: Arc<gbfs::StationInformation>,
+    pub current_status: Option<gbfs::StationStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nearby: Vec<WithDist<StationDetail>>,
+}

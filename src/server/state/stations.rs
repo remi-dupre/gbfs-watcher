@@ -29,6 +29,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::error;
 
 use crate::gbfs::models;
+use crate::server::models::{StationDetail, WithDist};
 use crate::storage::dir_lock::{self, DirLock};
 use crate::storage::journal::{StationStatusJournal, StationStatusJournalError};
 
@@ -64,15 +65,9 @@ pub struct UpdateCounts {
     pub total: usize,
 }
 
-pub struct StationDist {
-    pub dist: f64,
-    pub station: Arc<models::StationInformation>,
-}
-
 pub struct StationRegistry {
-    // TODO: I don't want this to be pub
     pub infos: RwHashMap<models::StationId, Arc<models::StationInformation>>,
-    pub by_dist: RwHashMap<models::StationId, Vec<StationDist>>,
+    pub by_dist: RwHashMap<models::StationId, Vec<WithDist<Arc<models::StationInformation>>>>,
     pub journals: AllStationsStatusJournal,
     pub journals_lock: DirLock,
 }
@@ -85,6 +80,28 @@ impl StationRegistry {
             journals: Default::default(),
             journals_lock: DirLock::lock(journals_path).await?,
         })
+    }
+
+    pub async fn get_station_details(
+        &self,
+        id: models::StationId,
+        nearby: usize,
+    ) -> Option<StationDetail> {
+        self.get_station_details_impl(id, nearby, None).await
+    }
+
+    pub async fn list_station_details<C: Default + Extend<StationDetail>>(
+        &self,
+        nearby: usize,
+    ) -> C {
+        let infos = self.infos.read().await.clone();
+
+        stream::iter(infos.values())
+            .filter_map(|info| {
+                self.get_station_details_impl(info.station_id, nearby, Some(info.clone()))
+            })
+            .collect()
+            .await
     }
 
     pub async fn update_infos(&self, infos: Vec<models::StationInformation>) -> UpdateCounts {
@@ -124,7 +141,7 @@ impl StationRegistry {
                             return None;
                         };
 
-                        Some(StationDist { dist, station: to })
+                        Some(WithDist { dist, station: to })
                     })
                     .collect();
 
@@ -255,5 +272,59 @@ impl StationRegistry {
         });
 
         ReceiverStream::new(receiver)
+    }
+
+    async fn get_station_details_impl(
+        &self,
+        id: models::StationId,
+        nearby: usize,
+        station_info: Option<Arc<models::StationInformation>>,
+    ) -> Option<StationDetail> {
+        let stations_info = &self.infos.read().await.clone();
+        let by_dist = &self.by_dist.read().await.clone();
+
+        let details_no_nearby = &|id, info| async move {
+            let info = match info {
+                Some(x) => x,
+                None => stations_info.get(&id)?.clone(),
+            };
+
+            let (current_status, journal_size) = {
+                if let Some(journal) = self.journals.read().await.get(&id) {
+                    let journal = journal.read().await;
+                    (journal.last().copied(), journal.len())
+                } else {
+                    (None, 0)
+                }
+            };
+
+            Some(StationDetail {
+                journal_size,
+                info,
+                current_status,
+                nearby: Vec::new(),
+            })
+        };
+
+        let mut res = details_no_nearby(id, station_info).await?;
+
+        res.nearby = stream::iter(by_dist.get(&id).into_iter().flatten())
+            .filter_map(|neighbour| async move {
+                let station = details_no_nearby(
+                    neighbour.station.station_id,
+                    Some(neighbour.station.clone()),
+                )
+                .await?;
+
+                Some(WithDist {
+                    dist: neighbour.dist,
+                    station,
+                })
+            })
+            .take(nearby)
+            .collect()
+            .await;
+
+        Some(res)
     }
 }

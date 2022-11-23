@@ -19,29 +19,19 @@ use std::sync::Arc;
 use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::{Path, Query};
 use axum::Json;
-use futures::{future, stream, StreamExt, TryStreamExt};
+use futures::{future, StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 
 use super::Error;
 use crate::gbfs::models;
+use crate::server::models::StationDetail;
 use crate::server::state::State;
 
-const NUM_NEARBY: usize = 10;
+/// Number of nearby stations listed in listing queries
+const NUM_NEARBY_LIST: usize = 0;
 
-#[derive(Serialize)]
-pub struct StationNearby {
-    pub distance: f64,
-    pub station: StationDetail,
-}
-
-#[derive(Serialize)]
-pub struct StationDetail {
-    pub journal_size: usize,
-    pub info: Arc<models::StationInformation>,
-    pub current_status: Option<models::StationStatus>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub nearby: Vec<StationNearby>,
-}
+/// Number of nearby stations listed in single queries
+const NUM_NEARBY_SINGLE: usize = 10;
 
 #[derive(Serialize)]
 pub struct Stations {
@@ -64,35 +54,14 @@ pub struct StationHistory {
 }
 
 pub async fn get_stations<'a>(state: Arc<State>) -> Json<Stations> {
-    let stations = state.stations.infos.read().await.clone();
-    let stations_status = &state.stations.journals.read().await;
+    let stations: Vec<_> = state.stations.list_station_details(NUM_NEARBY_LIST).await;
 
-    let stations = stream::iter(stations.iter())
-        .filter_map(|(station_id, info)| async move {
-            let (current_status, journal_size) = {
-                if let Some(journal) = stations_status.get(station_id) {
-                    let journal = journal.read().await;
-                    (journal.last().copied(), journal.len())
-                } else {
-                    (None, 0)
-                }
-            };
+    let stations = stations
+        .into_iter()
+        .map(|x| (x.info.station_id, x))
+        .collect();
 
-            Some((
-                *station_id,
-                StationDetail {
-                    journal_size,
-                    info: info.clone(),
-                    current_status,
-                    nearby: Vec::new(),
-                },
-            ))
-        })
-        .collect()
-        .await;
-
-    let resp = Stations { stations };
-    Json(resp)
+    Json(Stations { stations })
 }
 
 pub async fn get_station_detail(
@@ -100,65 +69,12 @@ pub async fn get_station_detail(
     id: Result<Path<u64>, PathRejection>,
 ) -> Result<Json<StationDetail>, Error> {
     let Path(id) = id?;
-    let stations_info = state.stations.infos.read().await.clone();
 
-    let info = stations_info
-        .get(&id)
-        .ok_or(Error::UnknownStation { station_id: id })?
-        .clone();
-
-    let (current_status, journal_size) = {
-        if let Some(journal) = state.stations.journals.read().await.get(&id) {
-            let journal = journal.read().await;
-            (journal.last().copied(), journal.len())
-        } else {
-            (None, 0)
-        }
-    };
-
-    let by_dist = state.stations.by_dist.read().await.clone();
-
-    let nearby: Vec<_> = stream::iter(by_dist.get(&info.station_id).into_iter().flatten())
-        .filter_map(|other| {
-            let id = other.station.station_id;
-            let state = state.clone();
-            let stations_info = stations_info.clone();
-
-            async move {
-                let info = stations_info.get(&id)?.clone();
-
-                let (current_status, journal_size) = {
-                    if let Some(journal) = state.stations.journals.read().await.get(&id) {
-                        let journal = journal.read().await;
-                        (journal.last().copied(), journal.len())
-                    } else {
-                        (None, 0)
-                    }
-                };
-
-                let station = StationDetail {
-                    journal_size,
-                    info,
-                    current_status,
-                    nearby: Vec::new(),
-                };
-
-                Some(StationNearby {
-                    distance: other.dist,
-                    station,
-                })
-            }
-        })
-        .take(NUM_NEARBY)
-        .collect()
-        .await;
-
-    let resp = StationDetail {
-        journal_size,
-        info,
-        current_status,
-        nearby,
-    };
+    let resp = state
+        .stations
+        .get_station_details(id, NUM_NEARBY_SINGLE)
+        .await
+        .ok_or(Error::UnknownStation { station_id: id })?;
 
     Ok(Json(resp))
 }
