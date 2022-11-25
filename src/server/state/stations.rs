@@ -21,24 +21,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::Utc;
-use futures::{future, stream, Stream, StreamExt, TryStreamExt};
+use futures::{future, stream, StreamExt, TryFuture, TryStreamExt};
 use geoutils::Location;
 use thiserror::Error as ThisError;
-use tokio::sync::{mpsc, RwLock};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::RwLock;
 use tracing::error;
 
 use crate::gbfs::models;
 use crate::server::models::{StationDetail, WithDist};
 use crate::storage::dir_lock::{self, DirLock};
 use crate::storage::journal::{StationStatusJournal, StationStatusJournalError};
-
-/// Size of the buffer while performing dumps (in number of journal entries)
-const DUMP_CACHE_SIZE: usize = 1024;
-
-/// Concurent journals that are being dumped at the same time, note that dumps won't block status
-/// updates as long as this value is lower than `CONCURENT_JOURNAL_WRITES`
-const CONCURENT_JOURNAL_DUMPS: usize = 4;
 
 /// Number of concurent insertions that will be performed on updates
 const CONCURENT_JOURNAL_WRITES: usize = 128;
@@ -235,43 +227,33 @@ impl StationRegistry {
         }
     }
 
-    pub async fn dump(&self) -> impl Stream<Item = Result<models::StationStatus, Error>> {
+    pub async fn try_for_each_status<S, F, R, E>(&self, init: S, mut read_status: F) -> Result<S, E>
+    where
+        F: FnMut(S, models::StationStatus) -> R,
+        R: TryFuture<Ok = S, Error = E>,
+        E: From<Error>,
+    {
         let start_ts: u64 = Utc::now()
             .timestamp()
             .try_into()
             .expect("invalid timestamp");
 
-        let (sender, receiver) = mpsc::channel(DUMP_CACHE_SIZE);
-        let stations_status = self.journals.read().await.clone();
+        let mut state = init;
+        let stations_status: Vec<_> = self.journals.read().await.values().cloned().collect();
 
-        tokio::spawn(async move {
-            stream::iter(stations_status.iter())
-                .for_each_concurrent(CONCURENT_JOURNAL_DUMPS, |(station_id, journal)| {
-                    let sender = sender.clone();
+        for journal in stations_status {
+            let journal = journal.read().await;
+            let iter = journal.iter().await.map_err(Error::from)?;
 
-                    async move {
-                        let journal = journal.read().await;
+            state = iter
+                .try_take_while(|obj| future::ready(Ok(obj.last_reported <= start_ts)))
+                .map_err(Error::from)
+                .map_err(E::from)
+                .try_fold(state, &mut read_status)
+                .await?;
+        }
 
-                        let iter = match journal.iter().await {
-                            Ok(x) => x,
-                            Err(err) => {
-                                error!("Dump failed for station {station_id}: {err}");
-                                sender.send(Err(err.into())).await.ok();
-                                return;
-                            }
-                        };
-
-                        iter.try_take_while(|obj| future::ready(Ok(obj.last_reported <= start_ts)))
-                            .map(Ok)
-                            .try_for_each(|obj| sender.send(obj.map_err(Into::into)))
-                            .await
-                            .ok();
-                    }
-                })
-                .await;
-        });
-
-        ReceiverStream::new(receiver)
+        Ok(state)
     }
 
     async fn get_station_details_impl(

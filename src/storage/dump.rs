@@ -14,20 +14,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::fmt::{Debug, Display};
-use std::path::PathBuf;
-use std::time::Instant;
-
 use async_compression::tokio::write::GzipEncoder;
 use chrono::{DateTime, Utc};
 use futures::{future, stream, Stream, StreamExt, TryStreamExt};
 use serde::Serialize;
+use std::fmt::Debug;
+use std::path::PathBuf;
 use tempdir::TempDir;
 use thiserror::Error as ThisError;
-use tokio::fs::OpenOptions;
+use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::dir_lock::DirLock;
 use crate::util::serialize_with_display;
@@ -40,6 +38,13 @@ pub enum Error {
     #[error("dump registry is already locked: {0}")]
     AlreadyLocked(#[from] super::dir_lock::Error),
 
+    #[error("could not serialize dump entry: {0}")]
+    Serialization(
+        #[from]
+        #[serde(serialize_with = "serialize_with_display")]
+        serde_json::Error,
+    ),
+
     #[error("I/O error: {0}")]
     IO(
         #[from]
@@ -50,92 +55,18 @@ pub enum Error {
 
 pub struct DumpRegistry {
     path: DirLock,
-    kept: usize,
 }
 
 impl DumpRegistry {
-    pub async fn new(path: PathBuf, kept: usize) -> Result<Self, Error> {
+    pub async fn new(path: PathBuf) -> Result<Self, Error> {
         let path = DirLock::lock(path).await?;
-        Ok(Self { path, kept })
+        Ok(Self { path })
     }
 
-    pub async fn dump<E, O, S>(&self, mut stream: S) -> Result<(), Error>
-    where
-        E: Display,
-        O: Serialize,
-        S: Stream<Item = Result<O, E>> + Unpin,
-    {
-        let start_instant = Instant::now();
+    pub async fn init_dump(&self) -> Result<DumpBuilder, Error> {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let filename = format!("dump_{now}.jsonl.gz");
-        let tmp_dir = TempDir::new_in(&*self.path, "dump_part")?;
-        let tmp_path = tmp_dir.path().join(&filename);
-
-        let mut count: u64 = 0;
-        let mut count_errors: u64 = 0;
-
-        {
-            let mut file = {
-                let file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&tmp_path)
-                    .await?;
-
-                let file = BufWriter::with_capacity(DUMP_BUF_SIZE, file);
-                GzipEncoder::with_quality(file, async_compression::Level::Best)
-            };
-
-            while let Some(obj) = stream.next().await {
-                let obj = match obj {
-                    Ok(x) => x,
-                    Err(err) => {
-                        error!("Could not retrieve object for dump: {err}");
-                        count_errors += 1;
-                        continue;
-                    }
-                };
-
-                let json = match serde_json::to_string(&obj) {
-                    Ok(mut x) => {
-                        x.push('\n');
-                        x
-                    }
-                    Err(err) => {
-                        error!("Could not serialize object for dump: {err}");
-                        count_errors += 1;
-                        continue;
-                    }
-                };
-
-                file.write_all(json.as_bytes()).await?;
-                count += 1;
-            }
-
-            // The encoder does not implicitly flush data
-            file.shutdown().await?;
-        }
-
-        let path = self.path.join(&filename);
-        tokio::fs::rename(&tmp_path, &path).await?;
-        let elapsed = start_instant.elapsed();
-
-        info!(
-            path = format!("{}", path.display()),
-            count = count,
-            errors = {
-                if count_errors == 0 {
-                    None
-                } else {
-                    Some(count_errors)
-                }
-            },
-            time = format!("{elapsed:.2?}"),
-            "Dump finished"
-        );
-
-        self.cleanup_old_dumps().await?;
-        Ok(())
+        DumpBuilder::new(self, filename).await
     }
 
     pub async fn latest(&self) -> Result<Option<(DateTime<Utc>, PathBuf)>, Error> {
@@ -175,14 +106,14 @@ impl DumpRegistry {
         Ok(stream)
     }
 
-    async fn cleanup_old_dumps(&self) -> Result<usize, Error> {
-        if self.kept == 0 {
+    pub async fn cleanup(&self, kept: usize) -> Result<usize, Error> {
+        if kept == 0 {
             return Ok(0);
         }
 
         let mut dumps: Vec<_> = self.iter().await?.try_collect().await?;
         dumps.sort_unstable_by_key(|(date, _)| *date);
-        let count_removed = dumps.len().saturating_sub(self.kept);
+        let count_removed = dumps.len().saturating_sub(kept);
 
         stream::iter(dumps)
             .take(count_removed)
@@ -192,5 +123,69 @@ impl DumpRegistry {
             .await?;
 
         Ok(count_removed)
+    }
+}
+
+#[must_use = "a dump builder must be closed"]
+pub struct DumpBuilder<'r> {
+    registry: &'r DumpRegistry,
+    tmp_dir: TempDir,
+    filename: String,
+    file: GzipEncoder<BufWriter<File>>,
+    has_closed: bool,
+}
+
+impl<'r> DumpBuilder<'r> {
+    async fn new(registry: &'r DumpRegistry, filename: String) -> Result<DumpBuilder<'r>, Error> {
+        let tmp_dir = TempDir::new_in(&*registry.path, "dump_part")?;
+        let tmp_path = tmp_dir.path().join(&filename);
+
+        let file = {
+            let file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+                .await?;
+
+            let file = BufWriter::with_capacity(DUMP_BUF_SIZE, file);
+            GzipEncoder::with_quality(file, async_compression::Level::Best)
+        };
+
+        Ok(Self {
+            registry,
+            tmp_dir,
+            filename,
+            file,
+            has_closed: false,
+        })
+    }
+
+    pub async fn insert<O: Serialize>(mut self, obj: O) -> Result<DumpBuilder<'r>, Error> {
+        let json = serde_json::to_string(&obj)?;
+        self.file.write_all(json.as_bytes()).await?;
+        self.file.write_u8(b'\n').await?;
+        Ok(self)
+    }
+
+    pub async fn close(mut self) -> Result<(), Error> {
+        // Flush the buffer
+        self.file.shutdown().await?;
+
+        // Move to target direction
+        let tmp_path = self.tmp_dir.path().join(&self.filename);
+        let target_path = self.registry.path.join(&self.filename);
+        tokio::fs::rename(&tmp_path, &target_path).await?;
+
+        // Now the handler can safely be dropped
+        self.has_closed = true;
+        Ok(())
+    }
+}
+
+impl Drop for DumpBuilder<'_> {
+    fn drop(&mut self) {
+        if !self.has_closed {
+            warn!("Dump creation was aborted without calling .close()");
+        }
     }
 }

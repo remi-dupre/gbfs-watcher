@@ -53,8 +53,8 @@ pub struct Args {
     dumps_dir: PathBuf,
 
     /// Max number of dumps kept on disk, 0 for no limit
-    #[clap(short, long, default_value = "3")]
-    keep_dumps: usize,
+    #[clap(short, long, default_value = "6")]
+    kept_dumps: usize,
 }
 
 #[tokio::main]
@@ -91,7 +91,7 @@ async fn main() {
                 &args.watched_url,
                 args.journals_dir,
                 args.dumps_dir,
-                args.keep_dumps,
+                args.kept_dumps,
             )
             .await
             .expect("failed to init state")

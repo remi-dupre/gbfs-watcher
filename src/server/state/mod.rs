@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::offset::{Local, Utc};
-use futures::Future;
+use futures::{Future, TryFutureExt};
 use thiserror::Error as ThisError;
 use tokio::sync::RwLock;
 use tokio::time::MissedTickBehavior;
@@ -79,11 +79,11 @@ impl State {
         api_root_url: &str,
         journals_path: PathBuf,
         dumps_path: PathBuf,
-        keep_dumps: usize,
+        kept_dumps: usize,
     ) -> Result<Arc<Self>, Error> {
         let state = Arc::new(Self {
             api: GbfsApi::new(api_root_url).await?,
-            dumps_registry: DumpRegistry::new(dumps_path, keep_dumps).await?,
+            dumps_registry: DumpRegistry::new(dumps_path).await?,
             stations: StationRegistry::new(journals_path).await?,
         });
 
@@ -106,9 +106,25 @@ impl State {
 
         state
             .clone()
-            .spawn_update_dumps_daemon(chrono::Duration::seconds(DUMP_FREQUENCY));
+            .spawn_update_dumps_daemon(chrono::Duration::seconds(DUMP_FREQUENCY), kept_dumps);
 
         Ok(state)
+    }
+
+    async fn dump(&self) -> Result<usize, Error> {
+        let dump = self.dumps_registry.init_dump().await?;
+        let mut count = 0;
+
+        let dump = self
+            .stations
+            .try_for_each_status(dump, |dump, obj| {
+                count += 1;
+                dump.insert(obj).map_err(Error::from)
+            })
+            .await?;
+
+        dump.close().await?;
+        Ok(count)
     }
 
     // Update daemons
@@ -165,9 +181,15 @@ impl State {
         );
     }
 
-    fn spawn_update_dumps_daemon(self: Arc<Self>, dump_frequency: chrono::Duration) {
+    fn spawn_update_dumps_daemon(
+        self: Arc<Self>,
+        dump_frequency: chrono::Duration,
+        kept_dumps: usize,
+    ) {
         tokio::spawn(async move {
             loop {
+                // WAIT FOR NEXT DUMP
+
                 let latest = match self.dumps_registry.latest().await {
                     Ok(x) => x,
                     Err(err) => {
@@ -199,10 +221,25 @@ impl State {
                     info!("Starting initial dump");
                 }
 
-                let dump_stream = self.stations.dump().await;
+                // WRITE DUMP
 
-                if let Err(err) = self.dumps_registry.dump(dump_stream).await {
-                    error!("Dump failed: {err}");
+                let start = Instant::now();
+
+                let count = match self.dump().await {
+                    Ok(x) => x,
+                    Err(err) => {
+                        error!("Dump failed: {err}");
+                        continue;
+                    }
+                };
+
+                let time = start.elapsed();
+                info!(count, time = format!("{time:.2?}"), "Finished dump");
+
+                // CLEANUP OLDER DUMPS
+
+                if let Err(err) = self.dumps_registry.cleanup(kept_dumps).await {
+                    error!("Failed to cleanup dumps: {err}");
                 }
             }
         });
