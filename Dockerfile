@@ -10,6 +10,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 ENV PATH=/root/.cargo/bin:$PATH
 
 # Setup build env
+ENV RUSTFLAGS="--cfg unsound_local_offset"
 WORKDIR /srv
 COPY . ./
 
@@ -25,5 +26,12 @@ RUN --mount=type=cache,target=/srv/target \
 # ---
 
 FROM alpine:3
+
+# Set local timezone
+RUN apk add tzdata                                     \
+ && cp /usr/share/zoneinfo/Europe/Paris /etc/localtime \
+ && echo "Europe/Paris" >  /etc/timezone               \
+ && apk del tzdata
+
 COPY --from=builder /srv/server /srv/server
 ENTRYPOINT ["/srv/server"]

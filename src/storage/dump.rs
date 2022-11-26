@@ -84,23 +84,20 @@ impl DumpRegistry {
     ) -> Result<impl Stream<Item = Result<(DateTime<Utc>, PathBuf), Error>>, Error> {
         let stream = ReadDirStream::new(tokio::fs::read_dir(&*self.path).await?)
             .map(|res| res.map_err(Into::into))
-            .try_filter_map(|entry| async move {
-                let filename = entry.file_name();
-                let filename = filename.to_string_lossy();
+            .try_filter_map(|entry| {
+                let res = move || {
+                    let filename = entry.file_name();
 
-                let Some(filename) = filename.strip_prefix("dump_") else {
-                    return Ok(None)
+                    let filename = filename
+                        .to_str()?
+                        .strip_prefix("dump_")?
+                        .strip_suffix(".jsonl.gz")?;
+
+                    let dt = chrono::DateTime::parse_from_rfc3339(filename).ok()?;
+                    Some((dt.into(), entry.path()))
                 };
 
-                let Some(filename) = filename.strip_suffix(".jsonl.gz") else {
-                    return Ok(None)
-                };
-
-                let Ok(dt) = chrono::DateTime::parse_from_rfc3339(filename) else {
-                    return Ok(None)
-                };
-
-                Ok(Some((dt.into(), entry.path())))
+                future::ready(Ok(res()))
             });
 
         Ok(stream)

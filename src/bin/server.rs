@@ -59,19 +59,34 @@ pub struct Args {
 
 #[tokio::main]
 async fn main() {
+    let tracing_level = {
+        if cfg!(debug_assertions) {
+            tracing_subscriber::filter::LevelFilter::DEBUG.into()
+        } else {
+            tracing_subscriber::filter::LevelFilter::INFO.into()
+        }
+    };
+
+    let tracing_timer = {
+        #[cfg(unsound_local_offset)]
+        {
+            tracing_subscriber::fmt::time::LocalTime::rfc_3339()
+        }
+
+        #[cfg(not(unsound_local_offset))]
+        {
+            tracing_subscriber::fmt::time::UtcTime::rfc_3339()
+        }
+    };
+
     let tracing_filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive({
-            if cfg!(debug_assertions) {
-                tracing_subscriber::filter::LevelFilter::DEBUG.into()
-            } else {
-                tracing_subscriber::filter::LevelFilter::INFO.into()
-            }
-        })
+        .with_default_directive(tracing_level)
         .from_env()
         .expect("could not build filter");
 
     let tracing_subscriber = tracing_subscriber::FmtSubscriber::builder()
         .with_target(false)
+        .with_timer(tracing_timer)
         .with_env_filter(tracing_filter)
         .finish();
 
