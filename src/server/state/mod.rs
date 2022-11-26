@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::offset::{Local, Utc};
+use chrono::offset::Local;
 use futures::{Future, TryFutureExt};
 use thiserror::Error as ThisError;
 use tokio::sync::RwLock;
@@ -200,7 +200,7 @@ impl State {
 
                 if let Some((latest_date, _)) = latest {
                     let next_date = latest_date + dump_frequency;
-                    let now = Utc::now();
+                    let now = Local::now();
 
                     if now < next_date {
                         let wait_duration = match (next_date - now).to_std() {
@@ -211,11 +211,11 @@ impl State {
                             }
                         };
 
-                        info!("Next dump scheduled on {}", next_date.with_timezone(&Local));
+                        info!("Next dump scheduled on {}", next_date);
                         tokio::time::sleep(wait_duration).await;
                         info!("Starting scheduled dump");
                     } else {
-                        info!("Starting new dump: last ages to {latest_date}: ");
+                        info!("Starting new dump: last ages to {latest_date}");
                     }
                 } else {
                     info!("Starting initial dump");

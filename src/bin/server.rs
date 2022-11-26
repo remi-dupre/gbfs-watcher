@@ -95,7 +95,7 @@ async fn main() {
 
     let args = Args::parse();
     let display_args = serde_json::to_string_pretty(&args).expect("could not display args");
-    info!("Running with parameters: {display_args}");
+    info!("Running with parameters {display_args}");
 
     let mut signals = Signals::new([signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM])
         .expect("could not subscribe to signals");

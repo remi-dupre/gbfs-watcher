@@ -23,7 +23,7 @@ use axum::extract::Path;
 use axum::http::header;
 use axum::response::IntoResponse;
 use axum::Json;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use futures::{future, StreamExt, TryStreamExt};
 use serde::Serialize;
 use tokio::fs::File;
@@ -88,7 +88,7 @@ pub async fn latest_dump(state: Arc<State>) -> Result<impl IntoResponse, Error> 
     serve_dump(date, path).await
 }
 
-async fn serve_dump(date: DateTime<Utc>, path: PathBuf) -> Result<impl IntoResponse, Error> {
+async fn serve_dump(date: DateTime<Local>, path: PathBuf) -> Result<impl IntoResponse, Error> {
     let file = File::open(&path).await.map_err(dump::Error::from)?;
     let meta = file.metadata().await.map_err(dump::Error::from)?;
 

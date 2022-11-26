@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use async_compression::tokio::write::GzipEncoder;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use futures::{future, stream, Stream, StreamExt, TryStreamExt};
 use serde::Serialize;
 use std::fmt::Debug;
@@ -64,12 +64,12 @@ impl DumpRegistry {
     }
 
     pub async fn init_dump(&self) -> Result<DumpBuilder, Error> {
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let now = Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let filename = format!("dump_{now}.jsonl.gz");
         DumpBuilder::new(self, filename).await
     }
 
-    pub async fn latest(&self) -> Result<Option<(DateTime<Utc>, PathBuf)>, Error> {
+    pub async fn latest(&self) -> Result<Option<(DateTime<Local>, PathBuf)>, Error> {
         self.iter()
             .await?
             .try_fold(None, |max, x| {
@@ -81,7 +81,7 @@ impl DumpRegistry {
 
     pub async fn iter(
         &self,
-    ) -> Result<impl Stream<Item = Result<(DateTime<Utc>, PathBuf), Error>>, Error> {
+    ) -> Result<impl Stream<Item = Result<(DateTime<Local>, PathBuf), Error>>, Error> {
         let stream = ReadDirStream::new(tokio::fs::read_dir(&*self.path).await?)
             .map(|res| res.map_err(Into::into))
             .try_filter_map(|entry| {
