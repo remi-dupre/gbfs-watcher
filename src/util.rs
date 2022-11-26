@@ -16,7 +16,9 @@
 
 use std::fmt::Display;
 
+use chrono::{DateTime, Local, NaiveDateTime, NaiveTime};
 use serde::Serializer;
+use tracing::{error, warn};
 
 pub fn serialize_with_display<T: Display, S>(x: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -31,6 +33,25 @@ pub fn non_zero<T: Copy + TryInto<i8>>(x: T) -> Option<T> {
         None
     } else {
         Some(x)
+    }
+}
+
+/// Return the time at midnight today in local time
+pub fn day_start() -> DateTime<Local> {
+    let now = Local::now();
+    let date = now.date_naive();
+    let datetime = NaiveDateTime::new(date, NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+
+    match datetime.and_local_timezone(Local) {
+        chrono::LocalResult::Single(x) => x,
+        chrono::LocalResult::Ambiguous(t1, t2) => {
+            warn!("Ambiguous start of the day, choosing {t1} over {t2}");
+            t1
+        }
+        chrono::LocalResult::None => {
+            error!("Could not compute start of the day");
+            now
+        }
     }
 }
 

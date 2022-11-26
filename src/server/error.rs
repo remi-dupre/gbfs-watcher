@@ -26,6 +26,7 @@ use serde::Serialize;
 use thiserror::Error as ThisError;
 
 use crate::gbfs::models;
+use crate::server::state;
 use crate::storage::{dump, journal};
 use crate::util::serialize_with_display;
 
@@ -69,6 +70,12 @@ pub enum Error {
         source: journal::StationStatusJournalError,
     },
 
+    #[error("stations error")]
+    Stations {
+        #[from]
+        source: state::stations::Error,
+    },
+
     #[error("no dump available on the server")]
     NoDump,
 
@@ -94,7 +101,9 @@ impl IntoResponse for Error {
             | Self::UnmatchedPath { .. }
             | Error::NoDumpWithName { .. } => StatusCode::NOT_FOUND,
 
-            Self::Journal { .. } | Self::DumpError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Journal { .. } | Self::Stations { .. } | Self::DumpError { .. } => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
         };
 
         #[derive(Serialize)]

@@ -29,9 +29,11 @@ use crate::server::state::State;
 
 /// Number of nearby stations listed in listing queries
 const NUM_NEARBY_LIST: usize = 0;
+const TODAY_HISTORY_PRECISION_LIST: u32 = 2 * 3600; // 2h
 
 /// Number of nearby stations listed in single queries
 const NUM_NEARBY_SINGLE: usize = 10;
+const TODAY_HISTORY_PRECISION_SINGLE: u32 = 1800; // 30min
 
 #[derive(Serialize)]
 pub struct Stations {
@@ -53,15 +55,18 @@ pub struct StationHistory {
     pub history: Vec<models::StationStatus>,
 }
 
-pub async fn get_stations<'a>(state: Arc<State>) -> Json<Stations> {
-    let stations: Vec<_> = state.stations.list_station_details(NUM_NEARBY_LIST).await;
+pub async fn get_stations<'a>(state: Arc<State>) -> Result<Json<Stations>, Error> {
+    let stations: Vec<_> = state
+        .stations
+        .list_station_details(NUM_NEARBY_LIST, TODAY_HISTORY_PRECISION_LIST)
+        .await?;
 
     let stations = stations
         .into_iter()
         .map(|x| (x.info.station_id, x))
         .collect();
 
-    Json(Stations { stations })
+    Ok(Json(Stations { stations }))
 }
 
 pub async fn get_station_detail(
@@ -72,8 +77,8 @@ pub async fn get_station_detail(
 
     let resp = state
         .stations
-        .get_station_details(id, NUM_NEARBY_SINGLE)
-        .await
+        .get_station_details(id, NUM_NEARBY_SINGLE, TODAY_HISTORY_PRECISION_SINGLE)
+        .await?
         .ok_or(Error::UnknownStation { station_id: id })?;
 
     Ok(Json(resp))

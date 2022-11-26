@@ -113,10 +113,7 @@ impl GbfsApi {
             .json()
             .await?;
 
-        let now = Utc::now()
-            .timestamp()
-            .try_into()
-            .expect("invalid timestamp");
+        let now = Utc::now().timestamp();
 
         // Velib' API doesn't appear to return monotonic timestamps so we override them
         for status in &mut resp.data.stations {

@@ -23,6 +23,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use futures::{future, stream, StreamExt, TryFuture, TryStreamExt};
 use geoutils::Location;
+use serde::Serialize;
 use thiserror::Error as ThisError;
 use tokio::sync::RwLock;
 use tracing::error;
@@ -31,11 +32,12 @@ use crate::gbfs::models;
 use crate::server::models::{StationDetail, WithDist};
 use crate::storage::dir_lock::{self, DirLock};
 use crate::storage::journal::{StationStatusJournal, StationStatusJournalError};
+use crate::util::day_start;
 
 /// Number of concurent insertions that will be performed on updates
 const CONCURENT_JOURNAL_WRITES: usize = 128;
 
-#[derive(Debug, ThisError)]
+#[derive(Debug, Serialize, ThisError)]
 pub enum Error {
     #[error("could not lock journals directory: {0}")]
     LockError(#[from] dir_lock::Error),
@@ -78,21 +80,29 @@ impl StationRegistry {
         &self,
         id: models::StationId,
         nearby: usize,
-    ) -> Option<StationDetail> {
-        self.get_station_details_impl(id, nearby, None).await
+        today_history_precision: u32,
+    ) -> Result<Option<StationDetail>, Error> {
+        self.get_station_details_impl(id, nearby, today_history_precision, None)
+            .await
     }
 
     pub async fn list_station_details<C: Default + Extend<StationDetail>>(
         &self,
         nearby: usize,
-    ) -> C {
+        today_history_precision: u32,
+    ) -> Result<C, Error> {
         let infos = self.infos.read().await.clone();
 
-        stream::iter(infos.values())
-            .filter_map(|info| {
-                self.get_station_details_impl(info.station_id, nearby, Some(info.clone()))
+        stream::iter(infos.values().map(Ok))
+            .try_filter_map(|info| {
+                self.get_station_details_impl(
+                    info.station_id,
+                    nearby,
+                    today_history_precision,
+                    Some(info.clone()),
+                )
             })
-            .collect()
+            .try_collect()
             .await
     }
 
@@ -233,11 +243,7 @@ impl StationRegistry {
         R: TryFuture<Ok = S, Error = E>,
         E: From<Error>,
     {
-        let start_ts: u64 = Utc::now()
-            .timestamp()
-            .try_into()
-            .expect("invalid timestamp");
-
+        let start_ts = Utc::now().timestamp();
         let mut state = init;
         let stations_status: Vec<_> = self.journals.read().await.values().cloned().collect();
 
@@ -260,53 +266,87 @@ impl StationRegistry {
         &self,
         id: models::StationId,
         nearby: usize,
+        today_history_precision: u32,
         station_info: Option<Arc<models::StationInformation>>,
-    ) -> Option<StationDetail> {
+    ) -> Result<Option<StationDetail>, Error> {
         let stations_info = &self.infos.read().await.clone();
         let by_dist = &self.by_dist.read().await.clone();
 
-        let details_no_nearby = &|id, info| async move {
-            let info = match info {
-                Some(x) => x,
-                None => stations_info.get(&id)?.clone(),
+        let details_no_nearby = &|id, info: Option<Arc<models::StationInformation>>| async move {
+            let Some(info) = info.or_else(|| stations_info.get(&id).cloned()) else {
+                return Ok(None)
             };
 
-            let (current_status, journal_size) = {
+            let (today_history, journal_size) = {
                 if let Some(journal) = self.journals.read().await.get(&id) {
                     let journal = journal.read().await;
-                    (journal.last().copied(), journal.len())
+                    let from = day_start().timestamp() as _;
+                    let today_history = journal.iter_from(from).await?.try_collect().await?;
+
+                    let today_history =
+                        history_with_precision(today_history, today_history_precision);
+
+                    (today_history, journal.len())
                 } else {
-                    (None, 0)
+                    (vec![], 0)
                 }
             };
 
-            Some(StationDetail {
+            Ok::<_, Error>(Some(StationDetail {
                 journal_size,
                 info,
-                current_status,
+                current_status: today_history.last().cloned(),
+                today_history,
                 nearby: Vec::new(),
-            })
+            }))
         };
 
-        let mut res = details_no_nearby(id, station_info).await?;
+        let Some(mut res) = details_no_nearby(id, station_info).await? else {
+            return Ok(None)
+        };
 
-        res.nearby = stream::iter(by_dist.get(&id).into_iter().flatten())
-            .filter_map(|neighbour| async move {
-                let station = details_no_nearby(
+        res.nearby = stream::iter(by_dist.get(&id).into_iter().flatten().map(Ok))
+            .try_filter_map(|neighbour| async move {
+                let Some(station) = details_no_nearby(
                     neighbour.station.station_id,
                     Some(neighbour.station.clone()),
                 )
-                .await?;
+                .await? else { return Ok::<_,Error>(None) };
 
-                Some(WithDist {
+                Ok(Some(WithDist {
                     dist: neighbour.dist,
                     station,
-                })
+                }))
             })
             .take(nearby)
-            .collect()
-            .await;
+            .try_collect()
+            .await?;
 
-        Some(res)
+        Ok(Some(res))
     }
+}
+
+fn history_with_precision(
+    statuses: Vec<models::StationStatus>,
+    interval: u32,
+) -> Vec<models::StationStatus> {
+    let Some(last) = statuses.last().cloned() else {
+            return Vec::new();
+        };
+
+    let interval: models::Timestamp = interval.into();
+    let mut iter = statuses.into_iter();
+    let mut res = vec![iter.next().unwrap()];
+
+    for status in iter {
+        if (status.last_reported - res.last().unwrap().last_reported) >= interval {
+            res.push(status);
+        }
+    }
+
+    if last.last_reported != res.last().unwrap().last_reported {
+        res.push(last);
+    }
+
+    res
 }

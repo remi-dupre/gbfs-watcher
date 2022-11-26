@@ -17,12 +17,14 @@
 //! GBFS data schema, see https://gbfs.mobilitydata.org/specification/reference
 
 use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::ops::{Add, DivAssign};
 
 use serde::{Deserialize, Serialize};
 
 pub type StationId = u64;
 pub type Coord = f32;
-pub type Timestamp = u64;
+pub type Timestamp = i64;
 pub type TTL = u64;
 pub type VehicleCount = u16;
 
@@ -170,20 +172,20 @@ pub struct StationStatusData {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct StationStatus {
+pub struct StationStatus<C = VehicleCount> {
     /// Identifier of a station.
     pub station_id: StationId,
 
     /// Number of bikes available for rental.
-    pub num_bikes_available: VehicleCount,
+    pub num_bikes_available: C,
 
     /// Number of docks accepting bike returns.
-    pub num_docks_available: VehicleCount,
+    pub num_docks_available: C,
 
     /// Number of empty but disabled dock points at the station. This value remains as part of the
     /// spec as it is possibly useful during development.
     #[serde(default)]
-    pub num_docks_disabled: VehicleCount,
+    pub num_docks_disabled: C,
 
     /// 1/0 boolean - is the station currently on the street.
     #[serde(deserialize_with = "deserialize_bool_int")]
@@ -205,25 +207,85 @@ pub struct StationStatus {
 
     /// This field is not part of the standart v1.1 schema
     #[serde(deserialize_with = "deserialize_bikes_available_per_type")]
-    pub num_bikes_available_types: BikesAvailablePerType,
+    pub num_bikes_available_types: BikesAvailablePerType<C>,
+}
+
+impl<C: Add<Output = C>> Add for StationStatus<C> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            num_bikes_available: self.num_bikes_available + rhs.num_bikes_available,
+            num_docks_available: self.num_docks_available + rhs.num_docks_available,
+            num_docks_disabled: self.num_docks_disabled + rhs.num_docks_disabled,
+            num_bikes_available_types: BikesAvailablePerType {
+                mechanical: self.num_bikes_available_types.mechanical
+                    + rhs.num_bikes_available_types.mechanical,
+                ebike: self.num_bikes_available_types.ebike + rhs.num_bikes_available_types.ebike,
+            },
+            ..self
+        }
+    }
+}
+
+impl<C: Copy + DivAssign<C>> DivAssign<C> for StationStatus<C> {
+    fn div_assign(&mut self, rhs: C) {
+        self.num_bikes_available /= rhs;
+        self.num_docks_available /= rhs;
+        self.num_docks_disabled /= rhs;
+        self.num_bikes_available_types.mechanical /= rhs;
+        self.num_bikes_available_types.ebike /= rhs;
+    }
+}
+
+impl From<StationStatus<VehicleCount>> for StationStatus<f32> {
+    fn from(rhs: StationStatus<VehicleCount>) -> Self {
+        let StationStatus {
+            station_id,
+            num_bikes_available,
+            num_docks_available,
+            num_docks_disabled,
+            is_installed,
+            is_returning,
+            is_renting,
+            last_reported,
+            num_bikes_available_types,
+        } = rhs;
+
+        Self {
+            station_id,
+            num_bikes_available: num_bikes_available.into(),
+            num_docks_available: num_docks_available.into(),
+            num_docks_disabled: num_docks_disabled.into(),
+            is_installed,
+            is_returning,
+            is_renting,
+            last_reported,
+            num_bikes_available_types: BikesAvailablePerType {
+                mechanical: num_bikes_available_types.mechanical.into(),
+                ebike: num_bikes_available_types.ebike.into(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct BikesAvailablePerType {
-    pub mechanical: VehicleCount,
-    pub ebike: VehicleCount,
+pub struct BikesAvailablePerType<C = VehicleCount> {
+    pub mechanical: C,
+    pub ebike: C,
 }
 
-fn deserialize_bikes_available_per_type<'de, D>(
+fn deserialize_bikes_available_per_type<'de, C, D>(
     deserializer: D,
-) -> Result<BikesAvailablePerType, D::Error>
+) -> Result<BikesAvailablePerType<C>, D::Error>
 where
+    C: Default + Deserialize<'de>,
     D: serde::de::Deserializer<'de>,
 {
-    struct PerTypeVisitor;
+    struct PerTypeVisitor<C>(PhantomData<C>);
 
-    impl<'de> serde::de::Visitor<'de> for PerTypeVisitor {
-        type Value = BikesAvailablePerType;
+    impl<'de, C: Default + Deserialize<'de>> serde::de::Visitor<'de> for PerTypeVisitor<C> {
+        type Value = BikesAvailablePerType<C>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
             formatter.write_str("a sequence of maps")
@@ -233,28 +295,29 @@ where
         where
             A: serde::de::SeqAccess<'de>,
         {
-            let mut mechanical = 0;
-            let mut ebike = 0;
+            let mut mechanical = C::default();
+            let mut ebike = C::default();
 
             #[derive(Deserialize)]
             #[serde(rename_all = "lowercase")]
-            enum TypedCount {
-                Mechanical(VehicleCount),
-                Ebike(VehicleCount),
+            enum TypedCount<X> {
+                Mechanical(X),
+                Ebike(X),
             }
 
-            while let Some(x) = seq.next_element::<TypedCount>()? {
+            while let Some(x) = seq.next_element::<TypedCount<C>>()? {
                 match x {
                     TypedCount::Mechanical(x) => mechanical = x,
                     TypedCount::Ebike(x) => ebike = x,
-                }
+                };
             }
 
             Ok(BikesAvailablePerType { mechanical, ebike })
         }
     }
 
-    deserializer.deserialize_seq(PerTypeVisitor)
+    let visitor = PerTypeVisitor(PhantomData::default());
+    deserializer.deserialize_seq(visitor)
 }
 
 fn deserialize_bool_int<'de, D>(deserializer: D) -> Result<bool, D::Error>

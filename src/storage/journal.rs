@@ -39,7 +39,7 @@ const JOURNAL_CACHE_SIZE: usize = 4096; // This will fit in 200 MB for 1500 jour
 const SEQ_READ_CACHE_SIZE: usize = 128 * 1024; // 128 kB
 
 pub type StationStatusJournal = Journal<{ binary::STATION_STATUS_BIN_SIZE }, models::StationStatus>;
-pub type StationStatusJournalError = Error<models::StationId>;
+pub type StationStatusJournalError = Error<models::Timestamp>;
 
 #[derive(Debug, Serialize, ThisError)]
 pub enum Error<K> {
