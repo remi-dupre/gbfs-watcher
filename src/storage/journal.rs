@@ -15,7 +15,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::VecDeque;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
@@ -103,6 +103,7 @@ pub struct Journal<const BIN_SIZE: usize, T> {
 impl<const BIN_SIZE: usize, T> Journal<BIN_SIZE, T>
 where
     T: Clone + Debug + Eq + Binary<BIN_SIZE> + JournalObject,
+    T::Key: Display,
 {
     pub async fn open(path: PathBuf) -> Result<Self, Error<T::Key>> {
         let (cache, size) = match File::open(&path).await {
@@ -188,6 +189,13 @@ where
         Ok(true)
     }
 
+    pub async fn at(&self, key: T::Key) -> Result<Option<T>, Error<T::Key>> {
+        Box::pin(self.iter_from(key).await?)
+            .next()
+            .await
+            .transpose()
+    }
+
     pub async fn iter(
         &self,
     ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>> + '_, Error<T::Key>> {
@@ -205,10 +213,7 @@ where
     pub async fn iter_from(
         &self,
         lower: T::Key,
-    ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>> + '_, Error<T::Key>>
-    where
-        T::Key: std::fmt::Display,
-    {
+    ) -> Result<impl Stream<Item = Result<T, Error<T::Key>>> + '_, Error<T::Key>> {
         if self.is_empty() {
             return Ok(stream::empty().left_stream());
         }

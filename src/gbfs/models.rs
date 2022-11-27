@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::ops::{Add, DivAssign};
+use std::ops::{AddAssign, DivAssign};
 
 use serde::{Deserialize, Serialize};
 
@@ -210,21 +210,25 @@ pub struct StationStatus<C = VehicleCount> {
     pub num_bikes_available_types: BikesAvailablePerType<C>,
 }
 
-impl<C: Add<Output = C>> Add for StationStatus<C> {
-    type Output = Self;
+impl<C: AddAssign<C>> AddAssign<StationStatus<C>> for StationStatus<C> {
+    fn add_assign(&mut self, rhs: Self) {
+        let Self {
+            station_id: _,
+            num_bikes_available,
+            num_docks_available,
+            num_docks_disabled,
+            is_installed: _,
+            is_returning: _,
+            is_renting: _,
+            last_reported: _,
+            num_bikes_available_types,
+        } = rhs;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        Self {
-            num_bikes_available: self.num_bikes_available + rhs.num_bikes_available,
-            num_docks_available: self.num_docks_available + rhs.num_docks_available,
-            num_docks_disabled: self.num_docks_disabled + rhs.num_docks_disabled,
-            num_bikes_available_types: BikesAvailablePerType {
-                mechanical: self.num_bikes_available_types.mechanical
-                    + rhs.num_bikes_available_types.mechanical,
-                ebike: self.num_bikes_available_types.ebike + rhs.num_bikes_available_types.ebike,
-            },
-            ..self
-        }
+        self.num_bikes_available += num_bikes_available;
+        self.num_docks_available += num_docks_available;
+        self.num_docks_disabled += num_docks_disabled;
+        self.num_bikes_available_types.mechanical += num_bikes_available_types.mechanical;
+        self.num_bikes_available_types.ebike += num_bikes_available_types.ebike;
     }
 }
 

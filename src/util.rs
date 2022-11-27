@@ -16,7 +16,7 @@
 
 use std::fmt::Display;
 
-use chrono::{DateTime, Local, NaiveDateTime, NaiveTime};
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use serde::Serializer;
 use tracing::{error, warn};
 
@@ -36,23 +36,27 @@ pub fn non_zero<T: Copy + TryInto<i8>>(x: T) -> Option<T> {
     }
 }
 
-/// Return the time at midnight today in local time
-pub fn day_start() -> DateTime<Local> {
-    let now = Local::now();
-    let date = now.date_naive();
-    let datetime = NaiveDateTime::new(date, NaiveTime::from_hms_opt(0, 0, 0).unwrap());
+pub fn day_to_date(day: NaiveDate) -> DateTime<Local> {
+    let datetime = NaiveDateTime::new(day, NaiveTime::from_hms_opt(0, 0, 0).unwrap());
 
     match datetime.and_local_timezone(Local) {
         chrono::LocalResult::Single(x) => x,
         chrono::LocalResult::Ambiguous(t1, t2) => {
-            warn!("Ambiguous start of the day, choosing {t1} over {t2}");
-            t1
+            warn!("Ambiguous start of the day, {t1} or {t2}");
+            std::cmp::min(t1, t2)
         }
         chrono::LocalResult::None => {
             error!("Could not compute start of the day");
-            now
+            Local::now() - Duration::hours(12)
         }
     }
+}
+
+/// Return the time at midnight today in local time
+pub fn day_start() -> DateTime<Local> {
+    let now = Local::now();
+    let date = now.date_naive();
+    day_to_date(date)
 }
 
 #[cfg(test)]

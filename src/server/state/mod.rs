@@ -87,10 +87,8 @@ impl State {
             stations: StationRegistry::new(journals_path).await?,
         });
 
-        tokio::join!(
-            state.clone().update_stations_info(),
-            state.clone().update_stations_status(),
-        );
+        state.clone().update_stations_status().await;
+        state.clone().update_stations_info().await; // runs second to load history
 
         spawn_update_daemon(
             Self::update_stations_status,

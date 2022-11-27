@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::io::{Cursor, Write};
 use std::ops::{Deref, DerefMut};
 
@@ -86,7 +86,7 @@ where
     pub async fn new() -> TestJournal<BIN_SIZE, T>
     where
         T: Clone + Debug + Eq + Binary<BIN_SIZE> + JournalObject,
-        T::Key: Debug,
+        T::Key: Debug + Display,
     {
         let tempdir = TempDir::new("test-journal").expect("could not create tempdir");
 

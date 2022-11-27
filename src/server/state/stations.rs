@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{Duration, NaiveDate, Utc};
 use futures::{future, stream, StreamExt, TryFuture, TryStreamExt};
 use geoutils::Location;
 use serde::Serialize;
@@ -32,10 +32,16 @@ use crate::gbfs::models;
 use crate::server::models::{StationDetail, WithDist};
 use crate::storage::dir_lock::{self, DirLock};
 use crate::storage::journal::{StationStatusJournal, StationStatusJournalError};
-use crate::util::day_start;
+use crate::util::{day_start, day_to_date};
 
 /// Number of concurent insertions that will be performed on updates
 const CONCURENT_JOURNAL_WRITES: usize = 128;
+
+/// Number of points in the history
+const ESTIMATE_POINTS: u16 = 25;
+
+/// Number of days to collect for the estimate
+const ESTIMATE_WEEKS: u16 = 8;
 
 #[derive(Debug, Serialize, ThisError)]
 pub enum Error {
@@ -62,6 +68,7 @@ pub struct UpdateCounts {
 pub struct StationRegistry {
     pub infos: RwHashMap<models::StationId, Arc<models::StationInformation>>,
     pub by_dist: RwHashMap<models::StationId, Vec<WithDist<Arc<models::StationInformation>>>>,
+    pub estimates: RwHashMap<(models::StationId, NaiveDate), Arc<Vec<models::StationStatus<f32>>>>,
     pub journals: AllStationsStatusJournal,
     pub journals_lock: DirLock,
 }
@@ -71,6 +78,7 @@ impl StationRegistry {
         Ok(Self {
             infos: Default::default(),
             by_dist: Default::default(),
+            estimates: Default::default(),
             journals: Default::default(),
             journals_lock: DirLock::lock(journals_path).await?,
         })
@@ -157,9 +165,32 @@ impl StationRegistry {
             .collect()
             .await;
 
+        let today = day_start().date_naive();
+        let mut new_estimates = HashMap::new();
+
+        for &id in new_infos.keys() {
+            let Some(journal) = self.journals.read().await.get(&id).cloned() else { continue };
+            let journal = journal.read().await;
+
+            for day_offset in 0..7 {
+                let day = today + Duration::days(day_offset);
+
+                let estimate = match estimated_for_day(day, &journal).await {
+                    Ok(x) => x,
+                    Err(err) => {
+                        error!("Could not build estimate: {err}");
+                        continue;
+                    }
+                };
+
+                new_estimates.insert((id, day), Arc::new(estimate));
+            }
+        }
+
         let total = new_infos.len();
         *self.infos.write().await = Arc::new(new_infos);
         *self.by_dist.write().await = Arc::new(new_by_dist);
+        *self.estimates.write().await = Arc::new(new_estimates);
 
         UpdateCounts {
             errors,
@@ -292,11 +323,17 @@ impl StationRegistry {
                 }
             };
 
+            let today_estimate = (self.estimates.read().await)
+                .get(&(id, day_start().date_naive()))
+                .cloned()
+                .unwrap_or_default();
+
             Ok::<_, Error>(Some(StationDetail {
                 journal_size,
                 info,
                 current_status: today_history.last().cloned(),
                 today_history,
+                today_estimate,
                 nearby: Vec::new(),
             }))
         };
@@ -349,4 +386,43 @@ fn history_with_precision(
     }
 
     res
+}
+
+async fn estimated_for_day(
+    day: NaiveDate,
+    journal: &StationStatusJournal,
+) -> Result<Vec<models::StationStatus<f32>>, Error> {
+    let start = day_to_date(day);
+
+    let interval =
+        Duration::microseconds((24 * 3600 * 1_000_000) / (i64::from(ESTIMATE_POINTS) - 1));
+
+    stream::iter(0..ESTIMATE_POINTS)
+        .map(Ok)
+        .try_filter_map(|point_idx| async move {
+            let point_ts = (start + (interval * i32::from(point_idx))).timestamp();
+
+            let mut days: Vec<_> = stream::iter(1..=ESTIMATE_WEEKS)
+                .map(Ok)
+                .try_filter_map(|week| {
+                    let day_ts = point_ts - (7 * 24 * 3600) * i64::from(week);
+                    journal.at(day_ts)
+                })
+                .try_collect()
+                .await?;
+
+            let count = days.len() + 1;
+            let Some(last) = days.pop() else { return Ok(None); };
+            let mut res: models::StationStatus<f32> = last.into();
+
+            for other in days {
+                res += other.into();
+            }
+
+            res /= count as f32;
+            res.last_reported = point_ts;
+            Ok(Some(res))
+        })
+        .try_collect()
+        .await
 }
