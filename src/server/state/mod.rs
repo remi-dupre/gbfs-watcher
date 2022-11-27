@@ -40,7 +40,7 @@ use stations::StationRegistry;
 const UPDATE_STATIONS_STATUS_FREQUENCY: Duration = Duration::from_secs(2 * 60); // 2min
 
 /// Update frequency for all stations, in seconds
-const UPDATE_STATIONS_INFO_FREQUENCY: Duration = Duration::from_secs(60 * 60); // 1h
+const UPDATE_STATIONS_INFO_FREQUENCY: Duration = Duration::from_secs(24 * 3600); // 24h
 
 /// Dump frequency, in seconds
 const DUMP_FREQUENCY: i64 = 12 * 60 * 60; // 12h
