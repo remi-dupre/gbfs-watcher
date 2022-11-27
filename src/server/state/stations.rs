@@ -37,10 +37,13 @@ use crate::util::{day_start, day_to_date};
 /// Number of concurent insertions that will be performed on updates
 const CONCURENT_JOURNAL_WRITES: usize = 128;
 
+/// Number of concurent journals read for estimates
+const CONCURENT_ESTIMATE_BUILT: usize = 16;
+
 /// Number of points in the history
 const ESTIMATE_POINTS: u16 = 25;
 
-/// Number of days to collect for the estimate
+/// Number of weeks to collect for the estimate
 const ESTIMATE_WEEKS: u16 = 8;
 
 #[derive(Debug, Serialize, ThisError)]
@@ -166,26 +169,37 @@ impl StationRegistry {
             .await;
 
         let today = day_start().date_naive();
-        let mut new_estimates = HashMap::new();
 
-        for &id in new_infos.keys() {
-            let Some(journal) = self.journals.read().await.get(&id).cloned() else { continue };
-            let journal = journal.read().await;
+        let new_estimates = stream::iter(new_infos.keys().copied())
+            .filter_map(|id| async move {
+                let journal = self.journals.read().await.get(&id)?.clone();
+                Some((id, journal))
+            })
+            .boxed()
+            .flat_map_unordered(CONCURENT_ESTIMATE_BUILT, |(id, journal)| {
+                stream::iter(0..7)
+                    .filter_map(move |day_offset| {
+                        let journal = journal.clone();
+                        let day = today + Duration::days(day_offset);
 
-            for day_offset in 0..7 {
-                let day = today + Duration::days(day_offset);
+                        async move {
+                            let journal = journal.read().await;
 
-                let estimate = match estimated_for_day(day, &journal).await {
-                    Ok(x) => x,
-                    Err(err) => {
-                        error!("Could not build estimate: {err}");
-                        continue;
-                    }
-                };
+                            let estimate = match estimated_for_day(day, &journal).await {
+                                Ok(x) => x,
+                                Err(err) => {
+                                    error!("Could not build estimate: {err}");
+                                    return None;
+                                }
+                            };
 
-                new_estimates.insert((id, day), Arc::new(estimate));
-            }
-        }
+                            Some(((id, day), Arc::new(estimate)))
+                        }
+                    })
+                    .boxed()
+            })
+            .collect()
+            .await;
 
         let total = new_infos.len();
         *self.infos.write().await = Arc::new(new_infos);
