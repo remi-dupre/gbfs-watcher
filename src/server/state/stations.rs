@@ -46,6 +46,9 @@ const ESTIMATE_POINTS: u16 = 25;
 /// Number of weeks to collect for the estimate
 const ESTIMATE_WEEKS: u16 = 8;
 
+/// Numbers of days to compute in advance for estimates
+const ESTIMATE_DAYS_FORWARD: i64 = 1;
+
 #[derive(Debug, Serialize, ThisError)]
 pub enum Error {
     #[error("could not lock journals directory: {0}")]
@@ -177,7 +180,7 @@ impl StationRegistry {
             })
             .boxed()
             .flat_map_unordered(CONCURENT_ESTIMATE_BUILT, |(id, journal)| {
-                stream::iter(0..7)
+                stream::iter(0..=ESTIMATE_DAYS_FORWARD)
                     .filter_map(move |day_offset| {
                         let journal = journal.clone();
                         let day = today + Duration::days(day_offset);
