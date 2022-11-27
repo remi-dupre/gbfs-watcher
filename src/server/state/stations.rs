@@ -44,7 +44,7 @@ const CONCURENT_ESTIMATE_BUILT: usize = 16;
 const ESTIMATE_POINTS: u16 = 25;
 
 /// Number of weeks to collect for the estimate
-const ESTIMATE_WEEKS: u16 = 8;
+const ESTIMATE_WEEKS: u16 = 4;
 
 /// Numbers of days to compute in advance for estimates
 const ESTIMATE_DAYS_FORWARD: i64 = 1;
