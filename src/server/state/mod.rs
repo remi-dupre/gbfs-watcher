@@ -33,7 +33,7 @@ use crate::gbfs::models;
 use crate::storage::dir_lock;
 use crate::storage::dump::{self, DumpRegistry};
 use crate::storage::journal::{StationStatusJournal, StationStatusJournalError};
-use crate::util::non_zero;
+use crate::util::log::non_zero;
 use stations::StationRegistry;
 
 /// Update frequency for all stations status, in seconds

@@ -28,7 +28,7 @@ use thiserror::Error as ThisError;
 use crate::gbfs::models;
 use crate::server::state;
 use crate::storage::{dump, journal};
-use crate::util::serialize_with_display;
+use crate::util::log::serialize_with_display;
 
 use super::routes::RouteDoc;
 

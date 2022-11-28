@@ -21,7 +21,7 @@ use serde::Serialize;
 use thiserror::Error as ThisError;
 use tokio::fs::OpenOptions;
 
-use crate::util::serialize_with_display;
+use crate::util::log::serialize_with_display;
 
 #[derive(Debug, Serialize, ThisError)]
 pub enum Error {

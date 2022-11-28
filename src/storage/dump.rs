@@ -28,7 +28,7 @@ use tokio_stream::wrappers::ReadDirStream;
 use tracing::{error, info, warn};
 
 use super::dir_lock::DirLock;
-use crate::util::serialize_with_display;
+use crate::util::log::serialize_with_display;
 
 /// Size of the file buffer while writing dumps
 const DUMP_BUF_SIZE: usize = 16 * 1024 * 1024; // 16 MB

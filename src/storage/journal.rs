@@ -29,7 +29,7 @@ use tracing::debug;
 use super::binary;
 use crate::gbfs::models;
 use crate::storage::binary::Binary;
-use crate::util::serialize_with_display;
+use crate::util::log::serialize_with_display;
 
 /// Number of cached elements at the end of the journal
 const JOURNAL_CACHE_SIZE: usize = 4096; // This will fit in 200 MB for 1500 journals of 27 bits

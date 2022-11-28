@@ -32,7 +32,8 @@ use crate::gbfs::models;
 use crate::server::models::{StationDetail, WithDist};
 use crate::storage::dir_lock::{self, DirLock};
 use crate::storage::journal::{StationStatusJournal, StationStatusJournalError};
-use crate::util::{day_start, day_to_date};
+use crate::util::history::{history_compressed, history_with_intervals};
+use crate::util::time::{day_start, day_to_date};
 
 /// Number of concurent insertions that will be performed on updates
 const CONCURENT_JOURNAL_WRITES: usize = 128;
@@ -40,11 +41,11 @@ const CONCURENT_JOURNAL_WRITES: usize = 128;
 /// Number of concurent journals read for estimates
 const CONCURENT_ESTIMATE_BUILT: usize = 16;
 
-/// Number of points in the history
-const ESTIMATE_POINTS: u16 = 25;
+/// Interval between two points of the estimate
+const ESTIMATE_PRECISION: u32 = 3600; // 1h
 
 /// Number of weeks to collect for the estimate
-const ESTIMATE_WEEKS: u16 = 4;
+const ESTIMATE_WEEKS: u16 = 2;
 
 /// Numbers of days to compute in advance for estimates
 const ESTIMATE_DAYS_FORWARD: i64 = 1;
@@ -196,7 +197,8 @@ impl StationRegistry {
                                 }
                             };
 
-                            Some(((id, day), Arc::new(estimate)))
+                            let estimate = Arc::new(history_compressed(&estimate));
+                            Some(((id, day), estimate))
                         }
                     })
                     .boxed()
@@ -342,7 +344,12 @@ impl StationRegistry {
                     );
 
                     let current_status = today_history_raw.last().copied();
-                    (current_status, today_history, journal.len())
+
+                    (
+                        current_status,
+                        history_compressed(&today_history),
+                        journal.len(),
+                    )
                 } else {
                     (None, vec![], 0)
                 }
@@ -388,127 +395,41 @@ impl StationRegistry {
     }
 }
 
-fn history_with_intervals(
-    history: &[models::StationStatus],
-    start_ts: models::Timestamp,
-    end_ts: models::Timestamp,
-    interval: models::Timestamp,
-) -> Vec<models::StationStatus<f32>> {
-    let mut history: Vec<models::StationStatus<f32>> =
-        history.iter().rev().copied().map(Into::into).collect();
-
-    let mut res: Vec<_> = (0..)
-        .map(|idx| start_ts + idx * interval)
-        .take_while(|curr_ts| *curr_ts < end_ts)
-        .filter_map(|curr_ts| {
-            let mut curr = *history.last()?;
-            let curr_ts_end = std::cmp::min(curr_ts + interval, end_ts);
-
-            // Ensures that current interval is covered by data
-            if curr.last_reported >= curr_ts_end {
-                return None;
-            }
-
-            curr *= 0.;
-            curr.last_reported = curr_ts;
-
-            while let Some(&last) = history.last() {
-                let intersect_start = std::cmp::max(curr_ts, last.last_reported);
-
-                let intersect_end = {
-                    if history.len() >= 2 {
-                        let llast = history[history.len() - 2];
-
-                        if llast.last_reported >= curr_ts_end {
-                            curr_ts_end
-                        } else {
-                            history.pop();
-                            llast.last_reported
-                        }
-                    } else {
-                        curr_ts_end
-                    }
-                };
-
-                curr += last
-                    * ((intersect_end - intersect_start) as f32 / (curr_ts_end - curr_ts) as f32);
-
-                // If the interval has been covered, we can yield it.
-                if intersect_end == curr_ts_end {
-                    break;
-                }
-            }
-
-            Some(curr)
-        })
-        .collect();
-
-    // Add last point of data which is at exactly the end date
-    if let Some(mut last) = history.pop() {
-        last.last_reported = end_ts;
-        res.push(last);
-    }
-
-    history_compressed(&res)
-}
-
-/// Compress consecutive points of same value in the history. If a chain of more than two points
-/// share the same counts, the first and last ones will be the only kept.
-fn history_compressed<T: Copy + PartialEq>(
-    history: &[models::StationStatus<T>],
-) -> Vec<models::StationStatus<T>> {
-    let key = |x: &models::StationStatus<T>| x.num_bikes_available_types;
-    let head = history.first().into_iter();
-    let tail = history.last().into_iter();
-
-    let body = history
-        .windows(3)
-        .filter(|w| {
-            let x = key(&w[0]);
-            let y = key(&w[1]);
-            let z = key(&w[2]);
-            x != y || y != z
-        })
-        .map(|w| &w[1]);
-
-    head.chain(body).chain(tail).copied().collect()
-}
-
 async fn estimated_for_day(
     day: NaiveDate,
     journal: &StationStatusJournal,
 ) -> Result<Vec<models::StationStatus<f32>>, Error> {
-    let start = day_to_date(day);
-
-    let interval =
-        Duration::microseconds((24 * 3600 * 1_000_000) / (i64::from(ESTIMATE_POINTS) - 1));
-
-    stream::iter(0..ESTIMATE_POINTS)
+    let mut weeks: Vec<_> = stream::iter(1..=ESTIMATE_WEEKS)
         .map(Ok)
-        .try_filter_map(|point_idx| async move {
-            let point_ts = (start + (interval * i32::from(point_idx))).timestamp();
+        .try_filter_map(|week| async move {
+            let start = day_to_date(day - Duration::days(7) * i32::from(week)).timestamp();
+            let end = start + 24 * 3600;
 
-            let mut days: Vec<_> = stream::iter(1..=ESTIMATE_WEEKS)
-                .map(Ok)
-                .try_filter_map(|week| {
-                    let day_ts = point_ts - (7 * 24 * 3600) * i64::from(week);
-                    journal.at(day_ts)
-                })
+            let raw_history: Vec<_> = journal
+                .iter_from(start)
+                .await?
+                .try_take_while(|x| future::ready(Ok(x.last_reported <= end)))
                 .try_collect()
                 .await?;
 
-            let count = days.len();
-            let Some(last) = days.pop() else { return Ok(None); };
-            let mut res: models::StationStatus<f32> = last.into();
+            let history =
+                history_with_intervals(&raw_history, start, end, ESTIMATE_PRECISION.into());
 
-            for other in days {
-                res += other.into();
-            }
-
-            res /= count as f32;
-            res.last_reported = point_ts;
-            Ok(Some(res))
+            Ok::<_, Error>(Some(history))
         })
         .try_collect()
-        .await
+        .await?;
+
+    let Some(mut res) = weeks.pop() else { return Ok(Vec::new()) };
+
+    for other in weeks {
+        res.iter_mut().zip(other).for_each(|(acc, x)| *acc += x);
+    }
+
+    for acc in &mut res {
+        *acc /= ESTIMATE_WEEKS as f32;
+        acc.last_reported += i64::from(ESTIMATE_WEEKS) * 7 * 24 * 3600;
+    }
+
+    Ok(res)
 }

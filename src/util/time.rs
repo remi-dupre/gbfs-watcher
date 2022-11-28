@@ -14,27 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::fmt::Display;
-
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime};
-use serde::Serializer;
 use tracing::{error, warn};
-
-pub fn serialize_with_display<T: Display, S>(x: &T, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    serializer.serialize_str(&format!("{x}"))
-}
-
-/// Return None if input is zero, useful to skip zero values in tracing.
-pub fn non_zero<T: Copy + TryInto<i8>>(x: T) -> Option<T> {
-    if matches!(x.try_into(), Ok(0)) {
-        None
-    } else {
-        Some(x)
-    }
-}
 
 pub fn day_to_date(day: NaiveDate) -> DateTime<Local> {
     let datetime = NaiveDateTime::new(day, NaiveTime::from_hms_opt(0, 0, 0).unwrap());
@@ -57,17 +38,4 @@ pub fn day_start() -> DateTime<Local> {
     let now = Local::now();
     let date = now.date_naive();
     day_to_date(date)
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn call_non_zero() {
-        assert_eq!(non_zero(0u32), None);
-        assert_eq!(non_zero(1u32), Some(1));
-        assert_eq!(non_zero(0isize), None);
-        assert_eq!(non_zero(-534isize), Some(-534));
-    }
 }
