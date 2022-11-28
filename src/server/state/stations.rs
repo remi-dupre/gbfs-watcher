@@ -428,7 +428,7 @@ async fn estimated_for_day(
                 .try_collect()
                 .await?;
 
-            let count = days.len() + 1;
+            let count = days.len();
             let Some(last) = days.pop() else { return Ok(None); };
             let mut res: models::StationStatus<f32> = last.into();
 
