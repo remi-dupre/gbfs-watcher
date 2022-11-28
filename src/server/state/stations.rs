@@ -325,18 +325,26 @@ impl StationRegistry {
                 return Ok(None)
             };
 
-            let (today_history, journal_size) = {
+            let (current_status, today_history, journal_size) = {
                 if let Some(journal) = self.journals.read().await.get(&id) {
                     let journal = journal.read().await;
                     let from = day_start().timestamp() as _;
-                    let today_history = journal.iter_from(from).await?.try_collect().await?;
+                    let to = Utc::now().timestamp();
 
-                    let today_history =
-                        history_with_precision(today_history, today_history_precision);
+                    let today_history_raw: Vec<_> =
+                        journal.iter_from(from).await?.try_collect().await?;
 
-                    (today_history, journal.len())
+                    let today_history = history_with_intervals(
+                        &today_history_raw,
+                        from,
+                        to,
+                        today_history_precision.into(),
+                    );
+
+                    let current_status = today_history_raw.last().copied();
+                    (current_status, today_history, journal.len())
                 } else {
-                    (vec![], 0)
+                    (None, vec![], 0)
                 }
             };
 
@@ -348,7 +356,7 @@ impl StationRegistry {
             Ok::<_, Error>(Some(StationDetail {
                 journal_size,
                 info,
-                current_status: today_history.last().cloned(),
+                current_status,
                 today_history,
                 today_estimate,
                 nearby: Vec::new(),
@@ -380,29 +388,90 @@ impl StationRegistry {
     }
 }
 
-fn history_with_precision(
-    statuses: Vec<models::StationStatus>,
-    interval: u32,
-) -> Vec<models::StationStatus> {
-    let Some(last) = statuses.last().cloned() else {
-            return Vec::new();
-        };
+fn history_with_intervals(
+    history: &[models::StationStatus],
+    start_ts: models::Timestamp,
+    end_ts: models::Timestamp,
+    interval: models::Timestamp,
+) -> Vec<models::StationStatus<f32>> {
+    let mut history: Vec<models::StationStatus<f32>> =
+        history.iter().rev().copied().map(Into::into).collect();
 
-    let interval: models::Timestamp = interval.into();
-    let mut iter = statuses.into_iter();
-    let mut res = vec![iter.next().unwrap()];
+    let mut res: Vec<_> = (0..)
+        .map(|idx| start_ts + idx * interval)
+        .take_while(|curr_ts| *curr_ts < end_ts)
+        .filter_map(|curr_ts| {
+            let mut curr = *history.last()?;
+            let curr_ts_end = std::cmp::min(curr_ts + interval, end_ts);
 
-    for status in iter {
-        if (status.last_reported - res.last().unwrap().last_reported) >= interval {
-            res.push(status);
-        }
-    }
+            // Ensures that current interval is covered by data
+            if curr.last_reported >= curr_ts_end {
+                return None;
+            }
 
-    if last.last_reported != res.last().unwrap().last_reported {
+            curr *= 0.;
+            curr.last_reported = curr_ts;
+
+            while let Some(&last) = history.last() {
+                let intersect_start = std::cmp::max(curr_ts, last.last_reported);
+
+                let intersect_end = {
+                    if history.len() >= 2 {
+                        let llast = history[history.len() - 2];
+
+                        if llast.last_reported >= curr_ts_end {
+                            curr_ts_end
+                        } else {
+                            history.pop();
+                            llast.last_reported
+                        }
+                    } else {
+                        curr_ts_end
+                    }
+                };
+
+                curr += last
+                    * ((intersect_end - intersect_start) as f32 / (curr_ts_end - curr_ts) as f32);
+
+                // If the interval has been covered, we can yield it.
+                if intersect_end == curr_ts_end {
+                    break;
+                }
+            }
+
+            Some(curr)
+        })
+        .collect();
+
+    // Add last point of data which is at exactly the end date
+    if let Some(mut last) = history.pop() {
+        last.last_reported = end_ts;
         res.push(last);
     }
 
-    res
+    history_compressed(&res)
+}
+
+/// Compress consecutive points of same value in the history. If a chain of more than two points
+/// share the same counts, the first and last ones will be the only kept.
+fn history_compressed<T: Copy + PartialEq>(
+    history: &[models::StationStatus<T>],
+) -> Vec<models::StationStatus<T>> {
+    let key = |x: &models::StationStatus<T>| x.num_bikes_available_types;
+    let head = history.first().into_iter();
+    let tail = history.last().into_iter();
+
+    let body = history
+        .windows(3)
+        .filter(|w| {
+            let x = key(&w[0]);
+            let y = key(&w[1]);
+            let z = key(&w[2]);
+            x != y || y != z
+        })
+        .map(|w| &w[1]);
+
+    head.chain(body).chain(tail).copied().collect()
 }
 
 async fn estimated_for_day(

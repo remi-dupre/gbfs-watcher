@@ -31,7 +31,7 @@ pub struct StationDetail {
     pub journal_size: usize,
     pub info: Arc<gbfs::StationInformation>,
     pub current_status: Option<gbfs::StationStatus>,
-    pub today_history: Vec<gbfs::StationStatus>,
+    pub today_history: Vec<gbfs::StationStatus<f32>>,
     pub today_estimate: Arc<Vec<gbfs::StationStatus<f32>>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub nearby: Vec<WithDist<StationDetail>>,

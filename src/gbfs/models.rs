@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::ops::{AddAssign, DivAssign};
+use std::ops::{AddAssign, DivAssign, Mul, MulAssign};
 
 use serde::{Deserialize, Serialize};
 
@@ -229,6 +229,25 @@ impl<C: AddAssign<C>> AddAssign<StationStatus<C>> for StationStatus<C> {
         self.num_docks_disabled += num_docks_disabled;
         self.num_bikes_available_types.mechanical += num_bikes_available_types.mechanical;
         self.num_bikes_available_types.ebike += num_bikes_available_types.ebike;
+    }
+}
+
+impl<C: Copy + MulAssign<C>> Mul<C> for StationStatus<C> {
+    type Output = StationStatus<C>;
+
+    fn mul(mut self, rhs: C) -> Self::Output {
+        self *= rhs;
+        self
+    }
+}
+
+impl<C: Copy + MulAssign<C>> MulAssign<C> for StationStatus<C> {
+    fn mul_assign(&mut self, rhs: C) {
+        self.num_bikes_available *= rhs;
+        self.num_docks_available *= rhs;
+        self.num_docks_disabled *= rhs;
+        self.num_bikes_available_types.mechanical *= rhs;
+        self.num_bikes_available_types.ebike *= rhs;
     }
 }
 
